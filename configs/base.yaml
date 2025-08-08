@@ -1,0 +1,116 @@
+# Base configuration for PPO training with Sokoban agents
+# This configuration follows the hydra structure with defaults and overrides
+# ------ Hydra Config ------
+
+defaults:
+  - agents
+  - ppo_trainer
+
+system:
+  CUDA_VISIBLE_DEVICES: 0
+
+# ------ Rollout Configuration ------
+rollout:
+  agent_group_num: [8]
+  agent_group_size: [16] # number of agents = agent_group_num * agent_group_size
+  validation_agent_group_num: [256, 256]
+  validation_agent_group_size: [1, 1]
+  training: [simpleSokobanAgent]
+  validation: [simpleSokobanAgent, largeSokobanAgent]
+  validation_seed: 123
+  truncation: left  # truncate from left (oldest tokens) to keep recent context
+  use_turn_scores: False  # for GAE computation
+  rollout_filter_ratio: 0.25  # filter ratio for rollout selection
+  rollout_filter_type: std  # std or std_rev for filtering criteria
+  reward_normalization:
+    grouping: "state" # state / batch / inductive
+    method: "identity" # asym_clip / identity / mean_std
+
+# ------ Training Parameters ------
+train_batch_size: 128
+micro_batch_size_per_gpu: 4
+ppo_micro_batch_size_per_gpu: 4
+ppo_mini_batch_size: 32
+total_training_steps: 200
+n_gpus_per_node: 1
+max_prompt_length: 4096
+max_response_length: 400
+test_freq: 10
+save_freq: -1
+gpu_memory_utilization: 0.5
+model_path: Qwen/Qwen2.5-0.5B-Instruct
+project_name: lmgame_train
+experiment_name: sokoban_train_example
+resume_mode: disable
+
+# ------ PPO_trainer Override Config ------
+actor_rollout_ref:
+  model:
+    path: ${model_path}
+  actor:
+    ppo_mini_batch_size: ${ppo_mini_batch_size}  # by default, ppo_mini_batch_size = train_batch_size / 4
+    micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
+    ppo_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
+    use_ref: True
+    entropy_coeff: 0.001
+    use_kl_loss: False
+    kl_loss_coef: 0.001
+    kl_loss_type: kl
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.28
+    optim:
+      betas: [0.9, 0.999]
+  ref:
+    log_prob_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
+  rollout:
+    log_prob_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
+    tensor_model_parallel_size: 1
+    max_model_len: 20000
+    prompt_length: 1 # useless. Just put it here
+    response_length: 400 # single-turn response length
+    gpu_memory_utilization: ${gpu_memory_utilization}
+    max_num_batched_tokens: 20000 # set only when enable_chunked_prefill is true
+    temperature: 1
+    rollout_filter_ratio: 0.25
+    rollout_filter_type: std # max_mean or std
+    enforce_eager: True
+    free_cache_engine: True
+    val_kwargs:
+      do_sample: False
+      temperature: 0
+
+critic:
+  ppo_mini_batch_size: ${ppo_mini_batch_size} # by default, ppo_mini_batch_size = train_batch_size / 4
+  ppo_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
+  model:
+    path: ${model_path}
+  optim:
+    betas: [0.9, 0.999]
+
+data:
+  max_prompt_length: ${max_prompt_length}
+  max_response_length: ${max_response_length}
+  train_batch_size: ${train_batch_size}
+
+algorithm:
+  gamma: 1.0
+  lam: 1.0
+  adv_estimator: gae
+  kl_penalty: kl  # how to estimate kl divergence
+  use_kl_in_reward: True
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.001
+
+trainer:
+  project_name: ${project_name}
+  experiment_name: ${experiment_name}
+  total_training_steps: ${total_training_steps}
+  validation_steps: 1 # validation instances = validation_steps * val_env_groups * group_size
+  val_before_train: True
+  n_gpus_per_node: ${n_gpus_per_node}
+  test_freq: ${test_freq}
+  logger: [ 'console', 'wandb' ] # 
+  val_only: False
+  save_freq: ${save_freq}
+  resume_mode: ${resume_mode}

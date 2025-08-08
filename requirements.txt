@@ -1,0 +1,105 @@
+# =============================================================================
+# CORE DEPENDENCIES - INSTALL ORDER MATTERS
+# =============================================================================
+# torch must be installed first for flash-attn compilation
+torch==2.7.0
+flash-attn==2.8.0.post2
+
+# =============================================================================
+# MACHINE LEARNING & DEEP LEARNING FRAMEWORKS
+# =============================================================================
+transformers==4.52.4
+accelerate
+peft
+datasets
+safetensors>=0.4.3
+huggingface_hub>=0.21.0
+tokenizers
+
+# =============================================================================
+# REINFORCEMENT LEARNING & DISTRIBUTED COMPUTING
+# =============================================================================
+ray[default]>=2.10
+tensordict==0.6.2
+torchdata
+vllm>=0.8.5
+
+# =============================================================================
+# VERL FRAMEWORK DEPENDENCIES
+# =============================================================================
+liger-kernel
+dill
+codetiming
+hydra-core
+pylatexenc
+pre-commit
+
+# =============================================================================
+# ENVIRONMENT & AGENT DEPENDENCIES
+# =============================================================================
+gym_sokoban
+gymnasium[toy-text]
+wandb
+
+# =============================================================================
+# DATA PROCESSING & UTILITIES
+# =============================================================================
+pandas
+numpy
+pyarrow>=19.0.0
+pybind11
+packaging>=20.0
+tqdm
+scipy
+plotly
+matplotlib
+matplotlib-inline
+
+# =============================================================================
+# DEVELOPMENT & DEBUGGING
+# =============================================================================
+IPython
+debugpy
+jupyter
+notebook
+
+# =============================================================================
+# WEB INTERFACE & API (Optional)
+# =============================================================================
+fastapi
+uvicorn
+pydantic
+
+# =============================================================================
+# SYSTEM & UTILITIES
+# =============================================================================
+psutil
+pyyaml
+filelock
+typing-extensions
+sympy
+jinja2
+networkx
+setuptools
+
+# for downloading the full WebShop dataset
+gdown>=4.6.6
+
+# =============================================================================
+# CUDA & GPU SUPPORT (Auto-installed with torch)
+# =============================================================================
+# nvidia-cublas-cu12
+# nvidia-cuda-cupti-cu12
+# nvidia-cuda-nvrtc-cu12
+# nvidia-cuda-runtime-cu12
+# nvidia-cudnn-cu12
+# nvidia-cufft-cu12
+# nvidia-cufile-cu12
+# nvidia-curand-cu12
+# nvidia-cusolver-cu12
+# nvidia-cusparse-cu12
+# nvidia-cusparselt-cu12
+# nvidia-nccl-cu12
+# nvidia-nvjitlink-cu12
+# nvidia-nvtx-cu12
+# triton

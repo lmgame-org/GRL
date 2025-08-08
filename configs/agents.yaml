@@ -1,0 +1,254 @@
+# ------ Sokoban Agent & Env Configs ------
+simpleSokobanAgent:
+  agent_type: "sokobanAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Sokoban puzzles step by step."
+    prompt: "You are solving the Sokoban puzzle. You are the player and you need to push all boxes to targets. When you are right next to a box, you can push it by moving in the same direction. You cannot push a box through a wall, and you cannot pull a box. The answer should be a sequence of actions, like <answer>Right || Right || Up</answer>."
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 6
+    max_actions_per_turn: 5
+    max_actions_all_turns: 10
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    dim_room: [6, 6]
+    num_boxes: 1
+    max_steps: 100
+    search_depth: 100  # Reduced from 300 to make simpler puzzles
+    grid_lookup: {0: "#", 1: "_", 2: "O", 3: "√", 4: "X", 5: "P", 6: "S"}
+    grid_vocab: {"#": "wall", "_": "empty", "O": "target", "√": "box on target", "X": "box", "P": "player", "S": "player on target"}
+    action_lookup: {1: "Up", 2: "Down", 3: "Left", 4: "Right"}
+    render_mode: "text"
+
+largeSokobanAgent:
+  agent_type: "sokobanAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Sokoban puzzles step by step."
+    prompt: "You are solving the Sokoban puzzle. You are the player and you need to push all boxes to targets. When you are right next to a box, you can push it by moving in the same direction. You cannot push a box through a wall, and you cannot pull a box. The answer should be a sequence of actions, like <answer>Right || Right || Up</answer>."
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 6
+    max_actions_per_turn: 5
+    max_actions_all_turns: 10
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    dim_room: [8, 8]
+    num_boxes: 1
+    max_steps: 100
+    search_depth: 30  # Reduced from 300 to make simpler puzzles
+    grid_lookup: {0: "#", 1: "_", 2: "O", 3: "√", 4: "X", 5: "P", 6: "S"}
+    grid_vocab: {"#": "wall", "_": "empty", "O": "target", "√": "box on target", "X": "box", "P": "player", "S": "player on target"}
+    action_lookup: {1: "Up", 2: "Down", 3: "Left", 4: "Right"}
+    render_mode: "text"
+
+# ------ GSM8K Agent & Env Configs ------
+gsm8kAgent_single_turn:
+  agent_type: "gsm8kAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves GSM8K puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+    
+  env_config:
+    dataset_path: "openai/gsm8k"
+    max_steps: 5
+    split: "train"
+
+gsm8kAgent_5_turn:
+  agent_type: "gsm8kAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves GSM8K puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "openai/gsm8k"
+    max_steps: 5
+    split: "train"
+
+
+# ------ Blocksworld Agent & Env Configs ------
+blocksworldAgent_text:
+  agent_type: "blocksworldAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Blocksworld puzzles step by step."
+    prompt:  "You are solving blocksworld problems. There are 3 blocks: block 1, block 2, and block 3. You can only move a block if there is no other block on top of it. Each action should be formatted as:\"move X to Y\", where X is the block number you're moving, and Y is either 0, meaning move the block to the table; or another block number, meaning move it on top of that block. You are given the current state and the goal state, and you need to find a sequence of actions to move the blocks to the goal state. The answer should be a sequence of actions, like <answer>(move 2 to 0) || (move 1 to 2)</answer>"
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 11
+    max_actions_per_turn: 5
+    max_actions_all_turns: 20
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    num_blocks: 3
+    max_steps: 100
+    render_mode: "text"
+
+blocksworldAgent_1d:
+  agent_type: "blocksworldAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Blocksworld puzzles step by step."
+    prompt:  "You are solving blocksworld problems. There are 3 blocks: block 1, block 2, and block 3. You can only move a block if there is no other block on top of it. Each action should be formatted as:\"move X to Y\", where X is the block number you're moving, and Y is either 0, meaning move the block to the table; or another block number, meaning move it on top of that block. You are given the current state and the goal state, and you need to find a sequence of actions to move the blocks to the goal state. The answer should be a sequence of actions, like <answer>(move 2 to 0) || (move 1 to 2)</answer>"
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 11
+    max_actions_per_turn: 5
+    max_actions_all_turns: 20
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    num_blocks: 3
+    max_steps: 100
+    render_mode: "1d"
+
+blocksworldAgent_2d_sparse:
+  agent_type: "blocksworldAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Blocksworld puzzles step by step."
+    prompt:  "You are solving blocksworld problems. There are 3 blocks: block 1, block 2, and block 3. You can only move a block if there is no other block on top of it. Each action should be formatted as:\"move X to Y\", where X is the block number you're moving, and Y is either 0, meaning move the block to the table; or another block number, meaning move it on top of that block. You are given the current state and the goal state, and you need to find a sequence of actions to move the blocks to the goal state. The answer should be a sequence of actions, like <answer>(move 2 to 0) || (move 1 to 2)</answer>"
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 11
+    max_actions_per_turn: 5
+    max_actions_all_turns: 20
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    num_blocks: 3
+    max_steps: 100
+    render_mode: "2d_sparse"
+
+# ------ Tetris Agent & Env Configs ------
+tetrisAgent_type_1_dim_4:
+  agent_type: "tetrisAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Tetris puzzles step by step."
+    prompt: "You are solving a simplified version of Tetris puzzle. The game board is a 4*4 grid, and blocks fall one at a time from the top. There is only one type of block, that is 1×1 square marked in X. Your goal is to fill the last row completely with blocks to get points, with the state such as \n____\n____\n____\n____\nYou can only move the current block left, right, or down. The answer should be a sequence of actions, like <answer>Left || Right || Down</answer> Hint: If we see empty space (_) in the last row, try to left/right move the current block to let it drop down to the empty space."
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 11
+    max_actions_per_turn: 5
+    max_actions_all_turns: 40
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    dim_x: 4
+    dim_y: 4
+    max_steps: 100
+    box_type: 1
+    action_lookup: {0: "Left", 1: "Right", 2: "Down"}
+    grid_lookup: {0: "_", 1: "#", 2: "X"}
+    grid_vocab: {"#": "filled spaces", "_": "empty", "X": "current block"}
+    render_mode: "text"
+
+tetrisAgent_type_2_dim_3:
+  agent_type: "tetrisAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Tetris puzzles step by step."
+    prompt: "You are solving a simplified version of Tetris puzzle. The game board is a 4*4 grid, and blocks fall one at a time from the top. There is only one type of block, that is 1×1 square marked in X. Your goal is to fill the last row completely with blocks to get points, with the state such as \n____\n____\n____\n____\nYou can only move the current block left, right, or down. The answer should be a sequence of actions, like <answer>Left || Right || Down</answer> Hint: If we see empty space (_) in the last row, try to left/right move the current block to let it drop down to the empty space."
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 11
+    max_actions_per_turn: 5
+    max_actions_all_turns: 40
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    dim_x: 3
+    dim_y: 3
+    max_steps: 100
+    box_type: 2
+    action_lookup: {0: "Left", 1: "Right", 2: "Down"}
+    grid_lookup: {0: "_", 1: "#", 2: "X"}
+    grid_vocab: {"#": "filled spaces", "_": "empty", "X": "current block"}
+    render_mode: "text"
+
+tetrisAgent_type_2_dim_4:
+  agent_type: "tetrisAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Tetris puzzles step by step."
+    prompt: "You are solving a simplified version of Tetris puzzle. The game board is a 4*4 grid, and blocks fall one at a time from the top. There is only one type of block, that is 1×1 square marked in X. Your goal is to fill the last row completely with blocks to get points, with the state such as \n____\n____\n____\n____\nYou can only move the current block left, right, or down. The answer should be a sequence of actions, like <answer>Left || Right || Down</answer> Hint: If we see empty space (_) in the last row, try to left/right move the current block to let it drop down to the empty space."
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 11
+    max_actions_per_turn: 5
+    max_actions_all_turns: 40
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    dim_x: 4
+    dim_y: 4
+    max_steps: 100
+    box_type: 2
+    action_lookup: {0: "Left", 1: "Right", 2: "Down"}
+    grid_lookup: {0: "_", 1: "#", 2: "X"}
+    grid_vocab: {"#": "filled spaces", "_": "empty", "X": "current block"}
+    render_mode: "text"
+# ------ Bird Agent & Env Configs ------
+
+birdAgent:
+  agent_type: "birdAgent"
+  agent_config:
+    system_prompt: 'You are an expert about text-to-SQL and pandas code.\n'
+    prompt: "Translate the question into SQL given database information. Replay with one fenced block that contains only SQL code:\n```sql\n...\n```\nExample: <answer>```sql\nSELECT * FROM users WHERE age > 18;\n```</answer>"
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+
+  env_config:
+    max_steps: 5
+    dataset_path: "datasets/bird_train/train/train_with_schema.json"
+    db_root: "datasets/bird_train/train/train_databases"
+
+
+# ------ Webshop Agent & Env Configs ------
+webshopAgent:
+  agent_type: "webshopAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves webshop puzzles step by step."
+    prompt: "You are browsing an online shop. Based on the instruction, find the product that matches the production description. You need to iteratively take action, read the website and decide what action to take next until finding the product. Available actions depends on the page: in the search page you can search keywords, in the search result page you can click an item url or click[next >] to navigate to next page, in the product page you can click[description] or click[features] to see the details, click[blue] or click[x-large] to choose size and colors, click[buy now] when you decided to buy the product, click[back to search] to return to search page. Example process: I need a gingko light and 20x20 pillow cover that is hand painted. First search[gingko light 20x20 pillow cover hand painted], answer format: <answer>search[blanket with fleece throw]</answer>. Valid answer is search[<keywords>] or click[<clickable>]."
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    enable_think: True  # enable thinking before answering
+    max_turns: 11
+    max_actions_per_turn: 10
+    max_actions_all_turns: 30
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    observation_mode: "text"
+    server: None
+    filter_goals: None
+    limit_goals: -1
+    num_products: None
+    human_goals: False
+    show_attrs: False
+    dataset_size: "small"
