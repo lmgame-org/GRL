@@ -39,7 +39,7 @@ LMGameRL is an open‑source framework that post‑trains LLMs via reinforcement
 
    # install all dependencies
    source scripts/install_submodules.sh
-   # avoid compiling flash-attn from scource
+   # avoid compiling flash-attn from source
    pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
    pip install flash-attn==2.8.0.post2 --no-build-isolation
    pip install -e .
