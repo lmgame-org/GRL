@@ -28,8 +28,9 @@ class BirdEnv(BaseEnv):
         # ── ensure dataset_path is absolute ──────────────────────────────
         raw_path = self.config.get("dataset_path", "")
         if raw_path and not os.path.isabs(raw_path):
-            # assume this file lives at <repo>/agents/birdAgent/env.py
-            repo_root = Path(__file__).resolve().parents[2]  # adjust if your layout differs
+            # this file lives at <repo>/lmgamerl/agents/birdAgent/env.py
+            # go up to <repo>
+            repo_root = Path(__file__).resolve().parents[3]
             abs_path = (repo_root / raw_path).resolve()
             self.config["dataset_path"] = str(abs_path)
         # ─────────────────────────────────────────────────────────────────
@@ -38,7 +39,8 @@ class BirdEnv(BaseEnv):
         raw_db = self.config.get("db_root",
                                  "datasets/bird_train/train/train_databases")
         if raw_db and not os.path.isabs(raw_db):
-            repo_root = Path(__file__).resolve().parents[2]
+            # go up to <repo>
+            repo_root = Path(__file__).resolve().parents[3]
             abs_db = (repo_root / raw_db).resolve()
             self.config["db_root"] = str(abs_db)
         # ─────────────────────────────────────────────────────────────────
