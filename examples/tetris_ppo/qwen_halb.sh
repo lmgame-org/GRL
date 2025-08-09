@@ -56,7 +56,7 @@ VAL_GROUP_SIZE_OVERRIDE="rollout.validation_agent_group_size=[$(printf "%s," "${
 # ------ Run Training ------
 python lmgamerl/train.py \
   --config-name "base" \
-  system.CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" \
+  "system.CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES}'" \
   "rollout.agent_group_num=[$AGENT_GROUP_NUM]" \
   "rollout.agent_group_size=[$AGENT_GROUP_SIZE]" \
   "$VAL_GROUP_NUM_OVERRIDE" \

@@ -5,6 +5,7 @@
 defaults:
   - agents
   - ppo_trainer
+  - _self_
 
 system:
   CUDA_VISIBLE_DEVICES: 0
