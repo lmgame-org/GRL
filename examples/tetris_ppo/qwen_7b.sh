@@ -15,6 +15,7 @@ N_GPUS_PER_NODE=${8:-4}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"tetris_qwen_7b_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen2.5-7B-Instruct"}
+GPU_MEMORY_UTILIZATION=${12:-"0.7"}
 
 echo "=== Tetris PPO Training with Qwen 7B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
@@ -28,6 +29,7 @@ echo "N_GPUs per node: $N_GPUS_PER_NODE"
 echo "Project name: $PROJECT_NAME"
 echo "Experiment name: $EXPERIMENT_NAME"
 echo "Model path: $MODEL_PATH"
+echo "GPU memory utilization: $GPU_MEMORY_UTILIZATION"
 
 # ------ Setup ------
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -63,6 +65,7 @@ python lmgamerl/train.py \
   "$VAL_GROUP_SIZE_OVERRIDE" \
   "$TRAINING_OVERRIDE" \
   "$VALIDATION_OVERRIDE" \
+  gpu_memory_utilization=$GPU_MEMORY_UTILIZATION \
   trainer.n_gpus_per_node=$N_GPUS_PER_NODE \
   trainer.project_name="$PROJECT_NAME" \
   trainer.experiment_name="$EXPERIMENT_NAME" \
