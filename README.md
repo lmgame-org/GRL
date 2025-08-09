@@ -1,6 +1,6 @@
 <div align="center">
 
-# LMGame Multi-Turn Reinforcement Learning
+# LMGame Reinforcement Learning
 
 </div>
 
@@ -20,7 +20,7 @@
 
 </div>
 
-LMGameRL is an open‑source framework that post‑trains LLMs via reinforcement learning on games, yielding general gains across diverse benchmarks.
+LMGameRL is an open‑source framework that post‑trains LLMs via multi-turn reinforcement learning on games, yielding general gains across diverse benchmarks.
 
 ## Release
 <strong>[2025/08/13]</strong> We release LMGameRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning.
