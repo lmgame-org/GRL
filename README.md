@@ -31,7 +31,7 @@ LMGameRL is an open‑source framework that post‑trains LLMs via multi-turn re
    ```bash
    # clone the repo
    git clone --recurse-submodules https://github.com/lmgame-org/LMGameRL.git
-   cd lmgame_train_reorg
+   cd LMGameRL
 
    # create a conda environment
    conda create --name lmgamerl python=3.10
