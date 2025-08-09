@@ -1,0 +1,8 @@
+[submodule "verl"]
+	path = verl
+	url = https://github.com/volcengine/verl.git
+	branch = v0.4.1.x
+	
+[submodule "external/webshop-minimal"]
+	path = external/webshop-minimal
+	url = https://github.com/ZihanWang314/webshop-minimal.git
