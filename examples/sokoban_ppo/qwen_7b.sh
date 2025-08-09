@@ -15,7 +15,7 @@ N_GPUS_PER_NODE=${8:-4}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"sokoban_qwen_7b_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen2.5-7B-Instruct"}
-GPU_MEMORY_UTILIZATION=${12:-"0.7"}
+GPU_MEMORY_UTILIZATION=${12:-"0.5"}
 
 echo "=== Sokoban PPO Training with Qwen 7B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
