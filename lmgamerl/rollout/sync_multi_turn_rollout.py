@@ -79,11 +79,17 @@ class SyncMultiTurnRollout:
             self.agent_names = getattr(self.cfg.rollout, 'validation', ['simpleSokobanAgent'])
         else:
             self.agent_names = getattr(self.cfg.rollout, 'training', ['simpleSokobanAgent'])
+
+        # Sanitize agent names to avoid accidental leading/trailing spaces in overrides
+        self.agent_names = [name.strip() for name in self.agent_names if isinstance(name, str) and name.strip()]
         
         self.agent_cls_list = []
         self.agent_config_list = []
         self.max_turns_list = []
         for agent_name in self.agent_names:
+            # Defensive: raise clearer error if task key is missing
+            if agent_name not in self.cfg:
+                raise KeyError(f"Task key '{agent_name}' not found in config. Check spacing/typos in rollout.{ 'validation' if self.validation else 'training' } list and in agents.yaml.")
             agent_type = self.cfg[agent_name]['agent_type']
 
             # Resolve agent class from registry
