@@ -2,6 +2,7 @@
 from typing import List, Dict, Any, Union
 import os
 from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 import torch
 from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
@@ -59,6 +60,7 @@ class SyncMultiTurnRollout:
         rollout_cfg = getattr(self.cfg, 'rollout', None)
         self.num_prompt_threads = _auto_threads(getattr(rollout_cfg, 'num_prompt_threads', 0))
         self.num_env_threads = _auto_threads(getattr(rollout_cfg, 'num_env_threads', 0))
+        self.show_tqdm = bool(getattr(rollout_cfg, 'show_tqdm', False))
 
 
 
@@ -178,7 +180,10 @@ class SyncMultiTurnRollout:
             return idx, prompt_str
 
         with ThreadPoolExecutor(max_workers=self.num_prompt_threads) as ex:
-            for idx, prompt in ex.map(build_prompt, enumerate(env_outputs)):
+            iterator = ex.map(build_prompt, enumerate(env_outputs))
+            if self.show_tqdm:
+                iterator = tqdm(iterator, total=len(env_outputs), desc="rollout/prompts", leave=False)
+            for idx, prompt in iterator:
                 llm_input_texts[idx] = prompt
         
         # Tokenize all prompts using verl_F for more universal processing
@@ -215,7 +220,10 @@ class SyncMultiTurnRollout:
             }
 
         with ThreadPoolExecutor(max_workers=self.num_prompt_threads) as ex:
-            for row_dict in ex.map(tokenize_one, llm_input_texts):
+            iterator = ex.map(tokenize_one, llm_input_texts)
+            if self.show_tqdm:
+                iterator = tqdm(iterator, total=len(llm_input_texts), desc="rollout/tokenize", leave=False)
+            for row_dict in iterator:
                 batch_list.append(row_dict)
         
         # Use collate_fn to batch the data, then convert to DataProto
@@ -263,7 +271,10 @@ class SyncMultiTurnRollout:
             return idx, env_out, is_done
 
         with ThreadPoolExecutor(max_workers=self.num_env_threads) as ex:
-            for idx, env_out, is_done in ex.map(step_one, enumerate(replies)):
+            iterator = ex.map(step_one, enumerate(replies))
+            if self.show_tqdm:
+                iterator = tqdm(iterator, total=len(replies), desc="rollout/env", leave=False)
+            for idx, env_out, is_done in iterator:
                 updated_env_outs[idx] = env_out
                 self.env_outs[idx] = env_out
                 self.done_mask[idx] = is_done
