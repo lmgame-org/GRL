@@ -1,5 +1,7 @@
 # sync_multi_turn_rollout.py
 from typing import List, Dict, Any, Union
+import os
+from concurrent.futures import ThreadPoolExecutor
 import torch
 from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
@@ -20,7 +22,7 @@ class SyncMultiTurnRollout:
 
     # ─────────────────── INITIALIZATION ───────────────────
     def __init__(self, actor_rollout_wg, cfg, tokenizer, processor, validation=False):
-        """
+        """evaluate the transferability to Tetris, Blocksworld, and GSM8K.
         Initialize rollout manager. Agent class is resolved from config.
         
         Args:
@@ -46,6 +48,17 @@ class SyncMultiTurnRollout:
         self.total_group_num = sum(self.agent_group_num_list)
         self.total_agent_num = sum(self.n_agents_list)
         self.validation = validation
+
+        # Threading configuration (lightweight acceleration on CPU)
+        # 0 or missing -> auto (use min(32, os.cpu_count()))
+        def _auto_threads(x: int | None) -> int:
+            if not x or x <= 0:
+                return max(1, min(32, (os.cpu_count() or 1)))
+            return x
+
+        rollout_cfg = getattr(self.cfg, 'rollout', None)
+        self.num_prompt_threads = _auto_threads(getattr(rollout_cfg, 'num_prompt_threads', 0))
+        self.num_env_threads = _auto_threads(getattr(rollout_cfg, 'num_env_threads', 0))
 
 
 
@@ -140,81 +153,64 @@ class SyncMultiTurnRollout:
         Returns:
             DataProto: Batched DataProto containing input_ids, attention_mask, position_ids
         """
-        llm_input_texts = []
-        
-        for idx, env_out in enumerate(env_outputs):
-            if self.done_mask[idx]:
-                # For done agents, use empty prompt
-                llm_input_texts.append("")
-                continue
-                
-            agent = self.agents[idx]
-            
-            # Each agent returns messages format
-            messages = agent.get_llm_prompts(env_out)
-            
-            # Apply chat template to convert messages to text
-            try:
-                prompt_str = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            except Exception as e:
-                prompt_str = "System error in chat template"
+        llm_input_texts = [""] * len(env_outputs)
 
+        def build_prompt(idx_env_out):
+            idx, env_out = idx_env_out
+            if self.done_mask[idx]:
+                return idx, ""
+            agent = self.agents[idx]
+            messages = agent.get_llm_prompts(env_out)
+            try:
+                prompt_str = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+            except Exception:
+                prompt_str = "System error in chat template"
             if agent.agent_config.get('use_think_answer_token', True):
-                if agent.agent_config.get('enable_think', True):
-                    prompt_str += "<think>"
-                else:
-                    prompt_str += "<answer>"
-            
-            llm_input_texts.append(prompt_str)
+                prompt_str += "<think>" if agent.agent_config.get('enable_think', True) else "<answer>"
+            return idx, prompt_str
+
+        with ThreadPoolExecutor(max_workers=self.num_prompt_threads) as ex:
+            for idx, prompt in ex.map(build_prompt, enumerate(env_outputs)):
+                llm_input_texts[idx] = prompt
         
         # Tokenize all prompts using verl_F for more universal processing
         batch_list = []
         
-        for i, prompt_str in enumerate(llm_input_texts):
-            
+        def tokenize_one(prompt_str: str):
             if not prompt_str or len(prompt_str.strip()) == 0:
-                prompt_str = "Please respond."  # Fallback
-            
-            # Use verl_F.tokenize_and_postprocess_data for consistent processing
+                prompt_str = "Please respond."
             try:
                 input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
                     prompt=prompt_str,
                     tokenizer=self.tokenizer,
                     max_length=self.cfg.max_prompt_length,
                     pad_token_id=self.tokenizer.pad_token_id,
-                    left_pad=True,  # Left pad for batch generation
-                    truncation=self.cfg.rollout.truncation
+                    left_pad=True,
+                    truncation=self.cfg.rollout.truncation,
                 )
-                
-                # Check for all-padding sequences
-                pad_token_id = self.tokenizer.pad_token_id
-                non_pad_count = (input_ids != pad_token_id).sum().item()
-                total_tokens = input_ids.numel()
-                
-            except Exception as e:
-                # Create emergency fallback tokens
-                fallback_text = "Please respond."
+            except Exception:
                 input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
-                    prompt=fallback_text,
+                    prompt="Please respond.",
                     tokenizer=self.tokenizer,
                     max_length=self.cfg.max_prompt_length,
                     pad_token_id=self.tokenizer.pad_token_id,
                     left_pad=True,
-                    truncation=self.cfg.rollout.truncation
+                    truncation=self.cfg.rollout.truncation,
                 )
-            
-            # Compute position ids
             from verl.utils.model import compute_position_id_with_mask
             position_ids = compute_position_id_with_mask(attention_mask)
-            
-            # Build row_dict for each prompt
-            row_dict = {
-                'input_ids': input_ids.squeeze(0),  # Remove batch dimension
+            return {
+                'input_ids': input_ids.squeeze(0),
                 'attention_mask': attention_mask.squeeze(0),
                 'position_ids': position_ids.squeeze(0),
-                'responses': input_ids.squeeze(0)[1:],  # Remove first token for responses
+                'responses': input_ids.squeeze(0)[1:],
             }
-            batch_list.append(row_dict)
+
+        with ThreadPoolExecutor(max_workers=self.num_prompt_threads) as ex:
+            for row_dict in ex.map(tokenize_one, llm_input_texts):
+                batch_list.append(row_dict)
         
         # Use collate_fn to batch the data, then convert to DataProto
         try:
@@ -248,24 +244,24 @@ class SyncMultiTurnRollout:
             skip_special_tokens=True
         )
 
-        # Update environment outputs for all agents
-        updated_env_outs = []
-        
-        for idx, reply in enumerate(replies):
+        # Update environment outputs for all agents in parallel
+        updated_env_outs = [None] * len(replies)
+
+        def step_one(i_reply):
+            idx, reply = i_reply
             if self.done_mask[idx]:
-                # Keep existing env output for done agents
-                updated_env_outs.append(self.env_outs[idx])
-                continue
-                
+                return idx, self.env_outs[idx], True
             agent = self.agents[idx]
-            # Agent handles history updates internally
             env_out = agent.get_env_outputs(reply)
-            updated_env_outs.append(env_out)
-            
-            # Update tracking structures
-            self.env_outs[idx] = env_out
-            self.done_mask[idx] = env_out.truncated or env_out.terminated
-        
+            is_done = env_out.truncated or env_out.terminated
+            return idx, env_out, is_done
+
+        with ThreadPoolExecutor(max_workers=self.num_env_threads) as ex:
+            for idx, env_out, is_done in ex.map(step_one, enumerate(replies)):
+                updated_env_outs[idx] = env_out
+                self.env_outs[idx] = env_out
+                self.done_mask[idx] = is_done
+
         return updated_env_outs
 
     # ─────────────────── LLM GENERATION ───────────────────

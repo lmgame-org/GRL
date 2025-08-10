@@ -26,6 +26,10 @@ rollout:
   reward_normalization:
     grouping: "state" # state / batch / inductive
     method: "identity" # asym_clip / identity / mean_std
+  # Lightweight CPU parallelism for prompt building and env stepping
+  # 0 or unset -> auto = min(32, os.cpu_count())
+  num_prompt_threads: 0
+  num_env_threads: 0
 
 # ------ Training Parameters ------
 train_batch_size: 128
@@ -115,3 +119,6 @@ trainer:
   val_only: False
   save_freq: ${save_freq}
   resume_mode: ${resume_mode}
+  # CPU slots reserved for the main TaskRunner actor in Ray.
+  # Increase if you use many threads in rollout to avoid CPU starvation.
+  taskrunner_num_cpus: 2

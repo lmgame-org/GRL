@@ -131,13 +131,14 @@ def run_ppo(config) -> None:
             num_cpus=config.ray_init.num_cpus,
         )
 
-    # Create a remote instance of the TaskRunner class, and
-    # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
+    # Create a remote instance of the TaskRunner class with configurable CPU slots,
+    # then execute the `run` method remotely
+    taskrunner_num_cpus = config.trainer.get("taskrunner_num_cpus", 1)
     if OmegaConf.select(config.trainer, "profile_steps") is not None and len(OmegaConf.select(config.trainer, "profile_steps")) > 0:
         nsight_options = OmegaConf.to_container(config.trainer.controller_nsight_options)
-        runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
+        runner = TaskRunner.options(num_cpus=taskrunner_num_cpus, runtime_env={"nsight": nsight_options}).remote()
     else:
-        runner = TaskRunner.remote()
+        runner = TaskRunner.options(num_cpus=taskrunner_num_cpus).remote()
     ray.get(runner.run.remote(config))
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
