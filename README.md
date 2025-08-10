@@ -60,7 +60,7 @@ source scripts/install_dataset.sh --all
 ## Quick Run
 
 For quick experimentation:
-Trains on 6×6 (1‑box) Sokoban and transfers to 8×8 (1-box).
+Trains on 6×6 (1‑box) Sokoban and evaluate the transferability to Tetris, Blocksworld, and GSM8K.
 
 ```bash
 source quick_train_qwen_halfb.sh
