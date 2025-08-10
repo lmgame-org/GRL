@@ -92,6 +92,19 @@ For deeper control beyond the script’s convenience knobs, edit `configs/base.y
 
 Tip: Keep defaults in `base.yaml` for reproducibility, and only override per‑run values in the script when experimenting.
 
+Shortcuts for visualization and CPU parallelism:
+
+- Set `rollout.show_tqdm: True` to see progress bars for concurrent agent steps (prompts/tokenize/env/agents).
+- Optional knobs (0 = auto): `rollout.num_prompt_threads`, `rollout.num_env_threads`, `rollout.num_init_threads`.
+- Example:
+  ```yaml
+  rollout:
+    show_tqdm: True
+    num_prompt_threads: 0
+    num_env_threads: 0
+    num_init_threads: 0
+  ```
+
 ## Minimal workflow recap
 
 1. Edit `quick_train_qwen_halfb.sh` variables for tasks, model, GPUs, and group sizes.
