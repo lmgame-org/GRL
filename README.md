@@ -112,7 +112,7 @@ The framework is pre‑configured for different GPU setups:
 - **BIRD**: SQL query generation and database reasoning
 
 ## Documentation
-
+- **[Tutorial](docs/TUTORIAL.md)** - Contributing and development workflow
 - **[System Design Overview](docs/SYSTEMDESIGN.md)** - Architecture and design principles
 - **[Development Guide](docs/DEVELOPMENT.md)** - Contributing and development workflow
 
