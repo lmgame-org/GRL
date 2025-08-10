@@ -82,17 +82,11 @@ class SyncMultiTurnRollout:
             self.agent_names = getattr(self.cfg.rollout, 'validation', ['simpleSokobanAgent'])
         else:
             self.agent_names = getattr(self.cfg.rollout, 'training', ['simpleSokobanAgent'])
-
-        # Sanitize agent names to avoid accidental leading/trailing spaces in overrides
-        self.agent_names = [name.strip() for name in self.agent_names if isinstance(name, str) and name.strip()]
         
         self.agent_cls_list = []
         self.agent_config_list = []
         self.max_turns_list = []
         for agent_name in self.agent_names:
-            # Defensive: raise clearer error if task key is missing
-            if agent_name not in self.cfg:
-                raise KeyError(f"Task key '{agent_name}' not found in config. Check spacing/typos in rollout.{ 'validation' if self.validation else 'training' } list and in agents.yaml.")
             agent_type = self.cfg[agent_name]['agent_type']
 
             # Resolve agent class from registry
@@ -121,42 +115,31 @@ class SyncMultiTurnRollout:
             if agent_num != self.agent_group_num_list[i] * self.agent_group_size_list[i]:
                 raise ValueError(f"Total agents ({agent_num}) != agent_group_num ({self.agent_group_num_list[i]}) × agent_group_size ({self.agent_group_size_list[i]})")
 
-        # Prepare parallel creation tasks preserving deterministic order
-        total_agents = self.total_agent_num
-        self.agents = [None] * total_agents
-        tasks: list[tuple[int, Any, dict]] = []
+        self.agents = []
         done_groups = 0
         agent_id_counter = 0
 
+        # loop through all agent types
         for i, agent_cls in enumerate(self.agent_cls_list):
             group_num = self.agent_group_num_list[i]
             group_size = self.agent_group_size_list[i]
             cfg = self.agent_config_list[i]
             name = self.agent_names[i]
+            # loop through all groups of the same agent type
             for local_group_id in range(group_num):
                 global_group_id = local_group_id + done_groups
+                # loop through group_size to initialize agents
                 for _ in range(group_size):
-                    kwargs = {
-                        'config': cfg,
-                        'agent_id': agent_id_counter,
-                        'group_id': global_group_id,
-                        'tag': name,
-                    }
-                    tasks.append((agent_id_counter, agent_cls, kwargs))
+                    agent = agent_cls(
+                        config=cfg,
+                        agent_id=agent_id_counter,
+                        group_id=global_group_id,
+                        tag=name)
                     agent_id_counter += 1
+                    self.agents.append(agent)
+            # update the done_groups for the next agent type
             done_groups += self.agent_group_num_list[i]
-
-        def create_one(item: tuple[int, Any, dict]):
-            idx, cls, kwargs = item
-            return idx, cls(**kwargs)
-
-        with ThreadPoolExecutor(max_workers=self.num_init_threads) as ex:
-            iterator = ex.map(create_one, tasks)
-            if self.show_tqdm:
-                iterator = tqdm(iterator, total=len(tasks), desc="rollout/agents", leave=False)
-            for idx, agent in iterator:
-                self.agents[idx] = agent
-
+        
         # Initialize tracking structures - actual env_outs will be set in rollout()
         self.done_mask = torch.zeros(self.total_agent_num, dtype=torch.bool)
         self.env_outs = None  # Will be initialized in _reset_batch_agents()
