@@ -30,7 +30,6 @@ rollout:
   # 0 or unset -> auto = min(32, os.cpu_count())
   num_prompt_threads: 0
   num_env_threads: 0
-  num_init_threads: 0
   # Show tqdm progress bars for concurrent steps
   show_tqdm: False
 
