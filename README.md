@@ -85,6 +85,7 @@ source examples/sokoban_ppo/qwen_7b.sh
 source examples/tetris_ppo/qwen_7b.sh
 ```
 
+> **Note:** BirdAgent may wait on SQLite file readiness or locks; heavy SQL can stall rollouts and prolong validation. 
 
 ### Hardware Configuration
 
