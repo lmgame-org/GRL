@@ -15,6 +15,8 @@ N_GPUS_PER_NODE=${8:-1}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"tetris_qwen_halfb_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen2.5-0.5B-Instruct"}
+# Training control
+TOTAL_TRAINING_STEPS=${13:-100}  # default 100 for Tetris
 
 echo "=== Tetris PPO Training with Qwen 0.5B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
@@ -66,6 +68,7 @@ python lmgamerl/train.py \
   trainer.n_gpus_per_node=$N_GPUS_PER_NODE \
   trainer.project_name="$PROJECT_NAME" \
   trainer.experiment_name="$EXPERIMENT_NAME" \
+  trainer.total_training_steps=$TOTAL_TRAINING_STEPS \
   model_path="$MODEL_PATH" \
   2>&1 | tee "$LOG_FILE"
 

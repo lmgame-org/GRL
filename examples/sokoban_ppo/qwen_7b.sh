@@ -16,6 +16,8 @@ PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"sokoban_qwen_7b_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen2.5-7B-Instruct"}
 GPU_MEMORY_UTILIZATION=${12:-"0.5"}
+# Training control
+TOTAL_TRAINING_STEPS=${13:-200}  # default 100 for Tetris
 
 echo "=== Sokoban PPO Training with Qwen 7B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
@@ -69,6 +71,7 @@ python lmgamerl/train.py \
   trainer.n_gpus_per_node=$N_GPUS_PER_NODE \
   trainer.project_name="$PROJECT_NAME" \
   trainer.experiment_name="$EXPERIMENT_NAME" \
+  trainer.total_training_steps=$TOTAL_TRAINING_STEPS \
   model_path="$MODEL_PATH" \
   2>&1 | tee "$LOG_FILE"
 

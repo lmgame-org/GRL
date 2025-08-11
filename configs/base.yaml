@@ -72,7 +72,7 @@ actor_rollout_ref:
   rollout:
     log_prob_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
     tensor_model_parallel_size: 1
-    max_model_len: 20000
+    max_model_len: 8192
     prompt_length: 1 # useless. Just put it here
     response_length: ${max_response_length} # single-turn response length
     gpu_memory_utilization: ${gpu_memory_utilization}

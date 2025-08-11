@@ -16,6 +16,8 @@ PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"tetris_qwen_7b_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen2.5-7B-Instruct"}
 GPU_MEMORY_UTILIZATION=${12:-"0.5"}
+# Training control
+TOTAL_TRAINING_STEPS=${13:-100}  # default 100 for Tetris
 
 echo "=== Tetris PPO Training with Qwen 7B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
@@ -69,6 +71,7 @@ python lmgamerl/train.py \
   trainer.n_gpus_per_node=$N_GPUS_PER_NODE \
   trainer.project_name="$PROJECT_NAME" \
   trainer.experiment_name="$EXPERIMENT_NAME" \
+  trainer.total_training_steps=$TOTAL_TRAINING_STEPS \
   model_path="$MODEL_PATH" \
   2>&1 | tee "$LOG_FILE"
 
@@ -80,4 +83,4 @@ echo "Training completed. Log: $LOG_FILE"
 # Custom agent groups: ./qwen_7b.sh "0,1,2,3" "16" "32"
 # Custom validation groups: ./qwen_7b.sh "0,1,2,3" "8" "16" "512,512" "1,1"
 # Custom tasks: ./qwen_7b.sh "0,1,2,3" "8" "16" "256,256" "1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3"
-# Full custom: ./qwen_7b.sh "0,1,2,3" "8" "16" "256,256,256,256" "1,1,1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3" 4 "my_project" "my_experiment" "Qwen/Qwen2.5-7B-Instruct"
+# Full custom: ./qwen_7b.sh "0,1,2,3" "8" "16" "256,256,256,256" "1,1,1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3" 4 "my_project" "my_experiment" "Qwen/Qwen2.5-7B-Instruct" 100

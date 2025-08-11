@@ -15,6 +15,8 @@ N_GPUS_PER_NODE=${8:-1}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"quick_train_qwen_halfb_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen2.5-0.5B-Instruct"}
+# Training control
+TOTAL_TRAINING_STEPS=${12:-200}  # default 200 for Sokoban quick run
 
 echo "=== Quick Training with Qwen 0.5B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
@@ -63,6 +65,7 @@ python lmgamerl/train.py \
   trainer.n_gpus_per_node=$N_GPUS_PER_NODE \
   trainer.project_name="$PROJECT_NAME" \
   trainer.experiment_name="$EXPERIMENT_NAME" \
+  trainer.total_training_steps=$TOTAL_TRAINING_STEPS \
   model_path="$MODEL_PATH" \
   2>&1 | tee "$LOG_FILE"
 
@@ -73,4 +76,4 @@ echo "Training completed. Log: $LOG_FILE"
 # Custom GPUs: ./quick_train_qwen_halfb.sh "0,1"
 # Custom agent groups: ./quick_train_qwen_halfb.sh "0" "16" "32"
 # Custom tasks: ./quick_train_qwen_halfb.sh "0" "8" "16" "64,64" "1,1" "simpleSokobanAgent" "simpleSokobanAgent,largeSokobanAgent"
-# Full custom: ./quick_train_qwen_halfb.sh "0" "8" "16" "64,64,64,64" "1,1,1,1" "simpleSokobanAgent" "simpleSokobanAgent,largeSokobanAgent" 1 "my_project" "my_experiment" "Qwen/Qwen2.5-0.5B-Instruct" 
+# Full custom: ./quick_train_qwen_halfb.sh "0" "8" "16" "64,64,64,64" "1,1,1,1" "simpleSokobanAgent" "simpleSokobanAgent,largeSokobanAgent" 1 "my_project" "my_experiment" "Qwen/Qwen2.5-0.5B-Instruct" 200
