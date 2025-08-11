@@ -227,8 +227,6 @@ birdAgent:
     max_steps: 5
     dataset_path: "datasets/bird_train/train/train_with_schema.json"
     db_root: "datasets/bird_train/train/train_databases"
-    sqlite_init_timeout: 60   # seconds to wait for first-time DB schema init per db_id
-    sqlite_timeout: 5         # seconds for read-only query timeout
 
 
 # ------ Webshop Agent & Env Configs ------

@@ -1,4 +1,3 @@
-import argparse
 import json
 import os
 import random
@@ -25,11 +24,6 @@ class BirdEnv(BaseEnv):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        # runtime connection cached per active db_id
-        self._conn: sqlite3.Connection | None = None
-        self._conn_db_id: str | None = None
-        self._gold_ok: bool | None = None
-        self._gold_rows: List[Tuple[Any, ...]] | str | None = None
 
         # ── ensure dataset_path is absolute ──────────────────────────────
         raw_path = self.config.get("dataset_path", "")
@@ -74,6 +68,10 @@ class BirdEnv(BaseEnv):
         self.db_id: str | None = None
         self.step_num: int = 0
         self.render_cache: str | None = None
+        # Track DB readiness per episode
+        self._db_ready: bool = False
+        self._last_db_id: str | None = None
+        self._db_poll_interval_s: float = 0.1
 
     @staticmethod
     def _normalize_sql(sql: str) -> str:
@@ -82,88 +80,56 @@ class BirdEnv(BaseEnv):
         sql = re.sub(r"\s+", " ", sql)
         return sql.strip()
 
-    def _db_dir(self) -> str:
-        return os.path.join(self.config['db_root'], self.db_id)
-
     def _db_file(self) -> str:
-        return os.path.join(self._db_dir(), f"{self.db_id}.sqlite")
+        return os.path.join(
+            self.config['db_root'],
+            self.db_id,
+            f"{self.db_id}.sqlite"
+        )
 
-    def _ready_marker(self) -> str:
-        return os.path.join(self._db_dir(), ".initialized")
-
-    def _lock_file(self) -> str:
-        return os.path.join(self._db_dir(), ".init_lock")
-
-    def _ensure_db_initialized(self) -> None:
+    def _wait_for_db_ready(self) -> None:
         """
-        Ensure the SQLite file for current db_id exists and has schema.
-        Uses a tiny on-disk lock file and a ready marker to avoid concurrent init.
+        Wait until the backing SQLite DB file for current db_id exists.
+        Do not initialize or write schema here to avoid concurrent initialization
+        contention. We assume another prior run has created these DBs.
         """
-        db_dir = self._db_dir()
-        db_file = self._db_file()
-        ready = self._ready_marker()
-        lockf = self._lock_file()
-
-        os.makedirs(db_dir, exist_ok=True)
-        if os.path.exists(db_file) and os.path.exists(ready):
+        # Fast path: already marked ready for this db_id and file exists
+        db_path = self._db_file()
+        if self._db_ready and self._last_db_id == self.db_id and os.path.exists(db_path):
             return
 
-        # Try to become initializer
-        started_init = False
-        try:
-            fd = os.open(lockf, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            os.close(fd)
-            started_init = True
-        except FileExistsError:
-            started_init = False
+        # If db file not present, wait indefinitely (user requested no time limit)
+        while not os.path.exists(db_path):
+            time.sleep(self._db_poll_interval_s)
 
-        if started_init:
-            try:
-                # Create DB and apply schema once
-                with sqlite3.connect(db_file, timeout=float(self.config.get('sqlite_init_timeout', 60))) as conn:
-                    conn.execute("PRAGMA journal_mode=WAL;")
-                    conn.execute("PRAGMA synchronous=NORMAL;")
-                    schema_sql = self.sample.get("schema") or self.schema
-                    if not schema_sql:
-                        raise RuntimeError("Missing schema; cannot initialize database.")
-                    conn.executescript(schema_sql)
-                    conn.commit()
-                Path(ready).write_text("ok", encoding="utf-8")
-            finally:
-                try:
-                    os.remove(lockf)
-                except FileNotFoundError:
-                    pass
-        else:
-            # Wait for initializer to finish
-            deadline = time.time() + float(self.config.get('sqlite_init_timeout', 60))
-            while time.time() < deadline:
-                if os.path.exists(ready) and os.path.exists(db_file):
-                    break
-                time.sleep(0.05)
-            # proceed regardless; if still not ready, connection open may fail which we surface
-
-    def _open_ro_connection(self) -> sqlite3.Connection:
-        """Open a read-only connection to the current db_id file."""
-        db_file = self._db_file()
-        uri = f"file:{db_file}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=float(self.config.get('sqlite_timeout', 5.0)))
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA temp_store=MEMORY;")
-        return conn
+        # Mark as ready for this db_id
+        self._db_ready = True
+        self._last_db_id = self.db_id
 
 
     def _execute_sql(self, sql: str) -> Tuple[bool, Union[List[Tuple[Any, ...]], str]]:
-        """Execute one SQL statement using cached read-only connection; returns sorted rows."""
+        """Execute *one* SQL statement and fetch all results."""
+        # Ensure DB file exists before attempting to connect
+        self._wait_for_db_ready()
+        db_file = self._db_file()
+
         try:
-            assert self._conn is not None, "Connection not initialized"
-            cur = self._conn.cursor()
-            cur.execute(sql)
-            rows = cur.fetchall()
-            cur.close()
-            rows_sorted = sorted(rows, key=lambda row: [x if x is not None else float('-inf') for x in row])
+            # Use a long timeout and busy_timeout to prefer waiting over failing
+            with sqlite3.connect(db_file, timeout=3600.0) as conn:
+                conn.execute("PRAGMA foreign_keys = OFF;")
+                conn.execute("PRAGMA busy_timeout = 3600000;")  # 1 hour
+
+                cur = conn.cursor()
+                cur.execute(sql)
+                rows = cur.fetchall()
+                cur.close()
+
+            # Sort safely, treating None as negative infinity
+            rows_sorted = sorted(rows, key=lambda row: [
+                x if x is not None else float('-inf') for x in row
+            ])
             return True, rows_sorted
+
         except Exception as exc:
             return False, str(exc)
 
@@ -178,24 +144,11 @@ class BirdEnv(BaseEnv):
         self.db_id = self.sample["db_id"]
         self.schema = self.sample["schema"]
         self.step_num = 0
+        # New episode: mark DB as not-checked for readiness
+        self._db_ready = False
+        self._last_db_id = None
 
         self.render_cache = f"[DB schema:\n{self.schema}] {self.question}"
-        # Ensure DB exists/initialized, then open cached read-only connection and cache gold result
-        try:
-            self._ensure_db_initialized()
-            if self._conn is None or self._conn_db_id != self.db_id:
-                if self._conn is not None:
-                    try:
-                        self._conn.close()
-                    except Exception:
-                        pass
-                self._conn = self._open_ro_connection()
-                self._conn_db_id = self.db_id
-            # Cache gold result once per episode
-            self._gold_ok, self._gold_rows = self._execute_sql(self.gold_sql)
-        except Exception as e:
-            # Defer failure to step
-            self._gold_ok, self._gold_rows = False, f"init error: {e}"
         return self.render_cache
 
     def step(self, action: str):
@@ -215,8 +168,8 @@ class BirdEnv(BaseEnv):
 
         submitted_sql = self._normalize_sql(match.group(1))
 
-        # Execute submitted SQL; gold is cached from reset
-        gold_ok, gold_res_or_err = self._gold_ok, self._gold_rows
+        # Execute gold and submitted SQL
+        gold_ok, gold_res_or_err = self._execute_sql(self.gold_sql)
         sub_ok, sub_res_or_err = self._execute_sql(submitted_sql)
 
         result_match = False
