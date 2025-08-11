@@ -74,7 +74,7 @@ actor_rollout_ref:
     tensor_model_parallel_size: 1
     max_model_len: 20000
     prompt_length: 1 # useless. Just put it here
-    response_length: 400 # single-turn response length
+    response_length: ${max_response_length} # single-turn response length
     gpu_memory_utilization: ${gpu_memory_utilization}
     max_num_batched_tokens: 20000 # set only when enable_chunked_prefill is true
     temperature: 1
