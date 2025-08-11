@@ -72,6 +72,8 @@ class BirdEnv(BaseEnv):
         self._db_ready: bool = False
         self._last_db_id: str | None = None
         self._db_poll_interval_s: float = 0.1
+        # Per-step SQL execution timeout (seconds); default 180s = 3 minutes
+        self._step_timeout_s: float = float(self.config.get("step_timeout_seconds", 180))
 
     @staticmethod
     def _normalize_sql(sql: str) -> str:
@@ -107,22 +109,43 @@ class BirdEnv(BaseEnv):
         self._last_db_id = self.db_id
 
 
-    def _execute_sql(self, sql: str) -> Tuple[bool, Union[List[Tuple[Any, ...]], str]]:
-        """Execute *one* SQL statement and fetch all results."""
+    def _execute_sql(self, sql: str, timeout_s: float | None = None) -> Tuple[bool, Union[List[Tuple[Any, ...]], str]]:
+        """Execute one SQL statement with a per-call timeout.
+
+        Returns (ok, result_or_error). On timeout, returns (False, f"TIMEOUT({timeout_s}s)").
+        """
         # Ensure DB file exists before attempting to connect
         self._wait_for_db_ready()
         db_file = self._db_file()
 
         try:
-            # Use a long timeout and busy_timeout to prefer waiting over failing
-            with sqlite3.connect(db_file, timeout=3600.0) as conn:
-                conn.execute("PRAGMA foreign_keys = OFF;")
-                conn.execute("PRAGMA busy_timeout = 3600000;")  # 1 hour
+            # Effective per-statement timeout via progress handler
+            eff_timeout = float(self._step_timeout_s if timeout_s is None else timeout_s)
+            start_time = time.time()
+            timeout_flag = False
 
-                cur = conn.cursor()
-                cur.execute(sql)
-                rows = cur.fetchall()
-                cur.close()
+            # Keep connection-level busy timeout <= eff_timeout
+            with sqlite3.connect(db_file, timeout=min(eff_timeout, 10.0)) as conn:
+                conn.execute("PRAGMA foreign_keys = OFF;")
+                conn.execute(f"PRAGMA busy_timeout = {int(eff_timeout * 1000)};")
+
+                def _progress_handler():
+                    nonlocal timeout_flag
+                    if (time.time() - start_time) > eff_timeout:
+                        timeout_flag = True
+                        return 1  # abort current statement
+                    return 0
+
+                # Call roughly every N SQLite VM opcodes
+                conn.set_progress_handler(_progress_handler, 1000)
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                    cur.close()
+                finally:
+                    # Clear handler for safety
+                    conn.set_progress_handler(None, 0)
 
             # Sort safely, treating None as negative infinity
             rows_sorted = sorted(rows, key=lambda row: [
@@ -131,7 +154,11 @@ class BirdEnv(BaseEnv):
             return True, rows_sorted
 
         except Exception as exc:
-            return False, str(exc)
+            # Distinguish timeout from other SQL errors
+            msg = str(exc)
+            if 'interrupted' in msg.lower() or 'cancel' in msg.lower() or 'abort' in msg.lower():
+                return False, f"TIMEOUT({int(eff_timeout)}s)"
+            return False, msg
 
 
 
@@ -168,9 +195,28 @@ class BirdEnv(BaseEnv):
 
         submitted_sql = self._normalize_sql(match.group(1))
 
-        # Execute gold and submitted SQL
-        gold_ok, gold_res_or_err = self._execute_sql(self.gold_sql)
-        sub_ok, sub_res_or_err = self._execute_sql(submitted_sql)
+        # Execute submission first with timeout; only run gold if submission succeeds
+        sub_ok, sub_res_or_err = self._execute_sql(submitted_sql, timeout_s=self._step_timeout_s)
+        if not sub_ok:
+            # Timed out or errored; format observation and continue multi-turn
+            timed_out = isinstance(sub_res_or_err, str) and sub_res_or_err.startswith("TIMEOUT(")
+            if timed_out:
+                observation = (
+                    f"⏱️ SQL execution exceeded {int(self._step_timeout_s)}s. "
+                    "Please simplify the query and try again with a succinct ```sql``` block."
+                )
+                reward = 0.0
+                done = self.step_num >= self.config.get('max_steps', 5)
+                info = {
+                    "action_is_valid(code_block)": True,
+                    "success": False,
+                    "timeout": True,
+                }
+                self.render_cache = observation
+                return observation, reward, done, info
+
+        # If submission succeeded, execute gold for comparison (also guarded by timeout)
+        gold_ok, gold_res_or_err = self._execute_sql(self.gold_sql, timeout_s=self._step_timeout_s)
 
         result_match = False
         sql_error_msg = ""

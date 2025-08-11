@@ -227,6 +227,7 @@ birdAgent:
     max_steps: 5
     dataset_path: "datasets/bird_train/train/train_with_schema.json"
     db_root: "datasets/bird_train/train/train_databases"
+    step_timeout_seconds: 180 # Per-step SQL execution timeout in seconds (3 minutes)
 
 
 # ------ Webshop Agent & Env Configs ------
