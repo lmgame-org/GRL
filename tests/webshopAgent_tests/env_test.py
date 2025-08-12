@@ -14,7 +14,7 @@ project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))                # local packages
 sys.path.insert(0, str(project_root / "external" / "webshop-minimal"))
 
-from lmgamerl.agents.webshopAgent.env import WebShopEnv         # adjust if module path differs
+from grl.agents.webshopAgent.env import WebShopEnv         # adjust if module path differs
 
 # ── logging helper (same pattern as GSM8K) ──────────────────────────────────
 def setup_logging():

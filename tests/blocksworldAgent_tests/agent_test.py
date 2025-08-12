@@ -15,7 +15,7 @@ project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
 # ── agent under test ────────────────────────────────────────────────────
-from lmgamerl.agents.blocksworldAgent.agent import BlocksworldAgent
+from grl.agents.blocksworldAgent.agent import BlocksworldAgent
 
 # ────────────────────────── logging helper ──────────────────────────────
 def setup_logging() -> "Tee":

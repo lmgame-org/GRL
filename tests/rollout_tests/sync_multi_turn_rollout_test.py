@@ -18,7 +18,7 @@ sys.path.insert(0, str(project_root))
 
 # Import real components
 from transformers import AutoTokenizer
-from lmgamerl.rollout.sync_multi_turn_rollout import SyncMultiTurnRollout
+from grl.rollout.sync_multi_turn_rollout import SyncMultiTurnRollout
 from tests.rollout_tests.rollout_test_utils import create_mock_actor_wg, create_mock_tokenizer_decode
 
 

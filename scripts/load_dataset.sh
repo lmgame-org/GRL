@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "Dataset Loading Script for lmgamerl"
+            echo "Dataset Loading Script for grl"
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
@@ -65,7 +65,7 @@ if [[ "$LOAD_ALL_DATASETS" == 1 ]]; then
 fi
 
 echo "=========================================="
-echo "lmgamerl Dataset Loading Script"
+echo "grl Dataset Loading Script"
 echo "Started at: $(date)"
 echo "=========================================="
 

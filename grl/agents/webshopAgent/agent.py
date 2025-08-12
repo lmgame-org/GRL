@@ -3,10 +3,10 @@ import random
 import yaml
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
-from lmgamerl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
-from lmgamerl.agents.base_agent import BaseAgent
-from lmgamerl.agents.webshopAgent.env import WebShopEnv
-from lmgamerl.agents import register_agent
+from grl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
+from grl.agents.base_agent import BaseAgent
+from grl.agents.webshopAgent.env import WebShopEnv
+from grl.agents import register_agent
 
 # ─────────────────── WEBSHOP AGENT ───────────────────
 @register_agent("webshopAgent")

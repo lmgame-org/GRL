@@ -47,7 +47,7 @@ Location: `trainer/agent_trainer.py`
 
 #### 2.6 Tooling & Build
 - [ ] Implement `uv` installation for faster package management
-- [✅] Package as `lmgamerl` via `pyproject.toml`
+- [✅] Package as `grl` via `pyproject.toml`
 - [ ] Convert `env_setup.sh` into an open and useful script
 - [ ] Remove submodule and wrap VERL as a monkey patch
 

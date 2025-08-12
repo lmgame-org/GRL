@@ -3,24 +3,28 @@ import random
 import yaml
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
-from lmgamerl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
-from lmgamerl.agents.base_agent import BaseAgent
-from lmgamerl.agents.sokobanAgent.env import SokobanEnv
-from lmgamerl.agents import register_agent
+from grl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
+from grl.agents.base_agent import BaseAgent
+from grl.agents.tetrisAgent.env import TetrisEnv
+from grl.agents import register_agent
 
-# ─────────────────── SOKOBAN AGENT ───────────────────
-@register_agent("sokobanAgent")
-class SokobanAgent(BaseAgent):
+# ─────────────────── TETRIS AGENT ───────────────────
+@register_agent("tetrisAgent")
+class TetrisAgent(BaseAgent):
     """
-    Sokoban agent that manages environment interactions and conversation history.
+    Tetris agent that manages environment interactions and conversation history.
     Compatible with SyncMultiTurnRollout interface.
     """
-    
+
     def __init__(self, config, group_id=0, agent_id=0, seed=None, tag=None):
         super().__init__(config, group_id, agent_id, seed, tag)
         self.prompt = self._build_enhanced_prompt(self.prompt)
         self.initialize_env()
 
+    def initialize_env(self):
+        """Initialize the Tetris environment."""
+        self.env = TetrisEnv(self.env_config)
+    
     def _build_enhanced_prompt(self, base_prompt):
         """Build enhanced prompt with environment info and emphatic format instructions."""
         enhanced_prompt = base_prompt
@@ -37,11 +41,6 @@ class SokobanAgent(BaseAgent):
 
         enhanced_prompt += f"\nYou can make up to {self.max_actions_all_turns} actions, and each action is separated by '{self.action_separator}'."
         return enhanced_prompt
-
-    def initialize_env(self):
-        """Initialize the Sokoban environment."""
-        self.env = SokobanEnv(self.env_config)
-
 
     def get_env_outputs(self, llm_response):
         """Process LLM outputs and get environment outputs."""
@@ -139,6 +138,8 @@ class SokobanAgent(BaseAgent):
             llm_response=processed_llm_response,
             llm_raw_response=llm_raw_response
         ))
+
+        # debug_printout_in_env_output(self.messages, executed_actions, self.tag)
         
         return EnvOutput(
             truncated=done,

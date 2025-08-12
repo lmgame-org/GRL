@@ -1,4 +1,4 @@
-# System Design — LMGame Multi‑Turn PPO Training
+# System Design — GRL Multi‑Turn PPO Training
 
 This document describes the high‑level design of the training stack, with emphasis on the **multi‑turn rollout** path introduced by `AgentTrainer` and `SyncMultiTurnRollout`.
 

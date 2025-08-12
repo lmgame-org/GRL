@@ -71,7 +71,7 @@ Then reference `mySokobanTiny` inside `TRAINING_TASKS` or `VALIDATION_TASKS` in 
 
 To add a new agent/env implementation:
 
-1. Implement your logic following the base interfaces in `lmgamerl/agents/base_agent.py` and `lmgamerl/agents/base_env.py`.
+1. Implement your logic following the base interfaces in `grl/agents/base_agent.py` and `grl/agents/base_env.py`.
 2. Add a new keyed entry in `configs/agents.yaml` with your `agent_type`, `agent_config`, and `env_config`.
 3. Use that key in `TRAINING_TASKS` / `VALIDATION_TASKS` inside the script.
 

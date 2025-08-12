@@ -4,9 +4,9 @@
 
 > **Quick Links**
 
-> - **GitHub Repository:** https://github.com/lmgame-org/LMGameRL
+> - **GitHub Repository:** https://github.com/lmgame-org/GRL
 
-> - **Tutorial:** https://github.com/lmgame-org/LMGameRL/blob/main/docs/TUTORIAL.md
+> - **Tutorial:** https://github.com/lmgame-org/GRL/blob/main/docs/TUTORIAL.md
 
 > - **Paper (arXiv):** https://arxiv.org/abs/2505.15146
 
@@ -26,7 +26,7 @@ Our experiments show that training on board games such as Sokoban and Tetris can
 
 
 
-## LMGameRL: Lightweight, scalable RL for LLM ability gains
+## GRL: Lightweight, scalable RL for LLM ability gains
 
 
 
@@ -54,7 +54,7 @@ Agents and environments are defined declaratively in `configs/agents.yaml`. The 
 
 
 
-The `env_config` controls the task dynamics and difficulty—grid sizes, steps, datasets, render modes, and vocab/lookups—mapping to the corresponding implementation under `lmgamerl/agents/*`. You can add your own environment or agent by following the base interfaces in `lmgamerl/agents/base_agent.py` and `lmgamerl/agents/base_env.py`, then registering a new keyed entry in `agents.yaml`.
+The `env_config` controls the task dynamics and difficulty—grid sizes, steps, datasets, render modes, and vocab/lookups—mapping to the corresponding implementation under `grl/agents/*`. You can add your own environment or agent by following the base interfaces in `grl/agents/base_agent.py` and `grl/agents/base_env.py`, then registering a new keyed entry in `agents.yaml`.
 
 
 
@@ -62,7 +62,7 @@ To customize a workflow: create or tweak a task entry (choose an `agent_type`, s
 
 
 
-(Please check [TUTORIAL.md](https://github.com/lmgame-org/LMGameRL/blob/main/docs/TUTORIAL.md) for further details)
+(Please check [TUTORIAL.md](https://github.com/lmgame-org/GRL/blob/main/docs/TUTORIAL.md) for further details)
 
 
 

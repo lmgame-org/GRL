@@ -1,9 +1,9 @@
 import gymnasium as gym
 from gym_sokoban.envs.sokoban_env import SokobanEnv as GymSokobanEnv
 import numpy as np
-from lmgamerl.agents.agent_utils import all_seed
+from grl.agents.agent_utils import all_seed
 from .utils import generate_room
-from lmgamerl.agents.base_env import BaseEnv
+from grl.agents.base_env import BaseEnv
 
 class SokobanEnv(GymSokobanEnv, BaseEnv):
     def __init__(self, config, **kwargs):

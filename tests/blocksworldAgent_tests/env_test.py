@@ -12,7 +12,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
-from lmgamerl.agents.blocksworldAgent.env import BlocksworldEnv
+from grl.agents.blocksworldAgent.env import BlocksworldEnv
 
 # ───────────────────────────── logging helper ────────────────────────────────
 def setup_logging():

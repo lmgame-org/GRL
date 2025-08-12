@@ -3,31 +3,34 @@ import random
 import yaml
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
-from lmgamerl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
-from lmgamerl.agents.base_agent import BaseAgent
-from lmgamerl.agents.blocksworldAgent.env import BlocksworldEnv
-from lmgamerl.agents import register_agent
+from grl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
+from grl.agents.base_agent import BaseAgent
+from grl.agents.gsm8kAgent.env import GSM8KEnv
+from grl.agents import register_agent
 
-# ─────────────────── BLOCKSWORLD AGENT ───────────────────
-@register_agent("blocksworldAgent")
-class BlocksworldAgent(BaseAgent):
+# ─────────────────── GSM8K AGENT ───────────────────
+@register_agent("gsm8kAgent")
+class GSM8KAgent(BaseAgent):
     """
-    Blocksworld agent that manages environment interactions and conversation history.
+    GSM8K agent that manages environment interactions and conversation history.
     Compatible with SyncMultiTurnRollout interface.
     """
     
     def __init__(self, config, group_id=0, agent_id=0, seed=None, tag=None):
         super().__init__(config, group_id, agent_id, seed, tag)
         self.initialize_env()
+        if self.agent_config.get('use_custom_prompt', False):
+            self.prompt = "You are solving Math problems. Let's think step by step. Always put the answer in integer at the end of your response."
+            self.turn_prompt_template = """Incorrect Answer.\nQuestion:\n{state}\nPlease think again."""
 
     def initialize_env(self):
-        """Initialize the Blocksworld environment."""
-        self.env = BlocksworldEnv(self.env_config)
+        """Initialize the GSM8K environment."""
+        self.env = GSM8KEnv(self.env_config)
 
     # ─────────────────── ENV INTERACTION ───────────────────
     def get_env_outputs(self, llm_response: str):
         """
-        Parse the model’s reply, send the (single) numeric answer to BlocksworldEnv,
+        Parse the model’s reply, send the (single) numeric answer to GSM8KEnv,
         and package the resulting EnvOutput + trajectory bookkeeping.
         """
         llm_raw_response = llm_response
@@ -45,23 +48,18 @@ class BlocksworldAgent(BaseAgent):
         total_reward = 0
         done = False
         info = {}  # Initialize info dictionary
-        valid_actions = []
-        invalid_actions = []
-
-        for action_str in actions:
-            action_str_clean = action_str.strip()
-            obs, reward, done, step_info = self.env.step(action_str_clean)
-            if step_info['action_is_valid']:
-                valid_actions.append(action_str)
-            else:
-                invalid_actions.append(action_str)
-            total_reward += reward
+        # If use_custom_prompt is True, we only use the last action as the answer
+        if self.agent_config.get('use_custom_prompt', False):
+            actions = [processed_llm_response]
+            obs, reward, done, step_info = self.env.step(actions[-1])
             info.update(step_info)
-            if done:
-                break
-        
-        if len(valid_actions) == 0 or len(actions) == 0 or len(valid_actions) != len(actions):
-            self.penalty += self.format_penalty
+        else:
+            if len(actions) != 0:
+                obs, reward, done, step_info = self.env.step(actions[-1])
+                total_reward += reward
+                info.update(step_info)
+            else:
+                self.penalty += self.format_penalty
 
         self.total_actions_consumed += len(actions)
 
@@ -81,7 +79,6 @@ class BlocksworldAgent(BaseAgent):
         ))
 
         # debug_printout_in_env_output(self.messages, actions, self.tag)
-
 
         return EnvOutput(
             truncated=done,

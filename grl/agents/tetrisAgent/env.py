@@ -3,8 +3,8 @@ import random
 from typing import Tuple, Dict, Any, List
 import gymnasium as gym
 import copy
-from lmgamerl.agents.agent_utils import all_seed
-from lmgamerl.agents.base_env import BaseEnv
+from grl.agents.agent_utils import all_seed
+from grl.agents.base_env import BaseEnv
 
 def is_occupied(shape, anchor, board):
     for i, j in shape:

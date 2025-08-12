@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
 import random
-from lmgamerl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput
+from grl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput
 class BaseAgent:
     """
     Abstract base class for agents. Provides high-level method signatures for agent lifecycle, environment interaction, LLM interface, trajectory management, and rollout collection.

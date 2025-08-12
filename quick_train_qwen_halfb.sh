@@ -53,7 +53,7 @@ VALIDATION_OVERRIDE="rollout.validation=[$(printf "\"%s\"," "${VALIDATION_ARRAY[
 VAL_GROUP_NUM_OVERRIDE="rollout.validation_agent_group_num=[$(printf "%s," "${VAL_GROUP_NUM_ARRAY[@]}" | sed 's/,$//')]"
 VAL_GROUP_SIZE_OVERRIDE="rollout.validation_agent_group_size=[$(printf "%s," "${VAL_GROUP_SIZE_ARRAY[@]}" | sed 's/,$//')]"
 
-python lmgamerl/train.py \
+python grl/train.py \
   --config-name "base" \
   system.CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" \
   "rollout.agent_group_num=[$AGENT_GROUP_NUM]" \

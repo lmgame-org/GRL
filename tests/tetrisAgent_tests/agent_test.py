@@ -12,7 +12,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
-from lmgamerl.agents.tetrisAgent.agent import TetrisAgent      # adjust path if needed
+from grl.agents.tetrisAgent.agent import TetrisAgent      # adjust path if needed
 
 # ╭────────────────────────── LOGGING SETUP ───────────────────────────╮
 def setup_logging():

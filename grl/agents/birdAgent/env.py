@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Union
 
 from datasets import load_dataset
-from lmgamerl.agents.agent_utils import all_seed
-from lmgamerl.agents.base_env import BaseEnv
+from grl.agents.agent_utils import all_seed
+from grl.agents.base_env import BaseEnv
 from pathlib import Path
 
 
@@ -28,7 +28,7 @@ class BirdEnv(BaseEnv):
         # ── ensure dataset_path is absolute ──────────────────────────────
         raw_path = self.config.get("dataset_path", "")
         if raw_path and not os.path.isabs(raw_path):
-            # this file lives at <repo>/lmgamerl/agents/birdAgent/env.py
+            # this file lives at <repo>/grl/agents/birdAgent/env.py
             # go up to <repo>
             repo_root = Path(__file__).resolve().parents[3]
             abs_path = (repo_root / raw_path).resolve()

@@ -1,8 +1,8 @@
 from datasets import load_dataset
 import re
 import random
-from lmgamerl.agents.agent_utils import all_seed
-from lmgamerl.agents.base_env import BaseEnv
+from grl.agents.agent_utils import all_seed
+from grl.agents.base_env import BaseEnv
 
 class GSM8KEnv(BaseEnv):
     def __init__(self, config, **kwargs):

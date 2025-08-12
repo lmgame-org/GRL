@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bird dataset loading utilities for lmgamerl.
+Bird dataset loading utilities for grl.
 Separate from main package installation.
 """
 
@@ -16,7 +16,7 @@ def _find_repo_root(start: Path) -> Path:
     """Find repository root by looking for characteristic directories."""
     cur = start.resolve()
     while cur != cur.parent:
-        if (cur / "lmgamerl").is_dir() or (cur / "pyproject.toml").is_file():
+        if (cur / "grl").is_dir() or (cur / "pyproject.toml").is_file():
             return cur
         cur = cur.parent
     raise FileNotFoundError("Could not locate project root")
@@ -38,7 +38,7 @@ def load_bird_dataset() -> tuple[Path, Path] | None:
     try:
         repo_root = _find_repo_root(Path(__file__).parent)
     except FileNotFoundError:
-        print("❌ Could not find lmgamerl project root", file=sys.stderr)
+        print("❌ Could not find grl project root", file=sys.stderr)
         return None
     # # -----------------------------------------
     # # debug load_dataset
@@ -151,7 +151,7 @@ def load_webshop_dataset() -> tuple[Path, Path] | None:
     try:
         repo_root = _find_repo_root(Path(__file__).parent)
     except FileNotFoundError:
-        print("❌ Could not find lmgamerl project root", file=sys.stderr)
+        print("❌ Could not find grl project root", file=sys.stderr)
         return None
 
     dest_dir = repo_root / "external" / "webshop-minimal" / "webshop_minimal" / "data" / "full"
@@ -191,7 +191,7 @@ def load_webshop_dataset() -> tuple[Path, Path] | None:
 
 def main():
     """Main entry point with CLI options."""
-    parser = argparse.ArgumentParser(description="Load datasets for lmgamerl")
+    parser = argparse.ArgumentParser(description="Load datasets for grl")
     parser.add_argument("--bird", action="store_true", help="Load Bird dataset")
     parser.add_argument("--webshop", action="store_true", help="Load WebShop dataset")
     
@@ -205,7 +205,7 @@ def main():
 
     if load_bird:
         anything = True
-        print("🚀 lmgamerl Bird Dataset Loader")
+        print("🚀 grl Bird Dataset Loader")
         print("=" * 30)
         result = load_bird_dataset()
         if not result:
@@ -218,7 +218,7 @@ def main():
 
     if load_webshop:
         anything = True
-        print("\n🚀 lmgamerl WebShop Dataset Loader")
+        print("\n🚀 grl WebShop Dataset Loader")
         print("=" * 30)
         result_ws = load_webshop_dataset()
         if not result_ws:

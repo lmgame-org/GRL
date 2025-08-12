@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # ── agent registry ───────────────────────────────────────────────────────
-from lmgamerl.agents import (
+from grl.agents import (
     list_registered_agents,
     list_unavailable_agents,
     get_agent_cls,

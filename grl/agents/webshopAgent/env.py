@@ -10,14 +10,14 @@ sys.path.insert(0, str(webshop_path))
 
 from webshop_minimal import WebAgentTextEnv
 from typing import Optional, Union
-from lmgamerl.agents.agent_utils import all_seed
+from grl.agents.agent_utils import all_seed
 import random
 import string
 from webshop_minimal.utils import (
     init_basedir,
     DEFAULT_FILE_PATH,
 )
-from lmgamerl.agents.base_env import BaseEnv
+from grl.agents.base_env import BaseEnv
 
 class WebShopEnv(WebAgentTextEnv, BaseEnv):
     def __init__(self, config, **kwargs: any) -> None:

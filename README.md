@@ -1,6 +1,8 @@
 <div align="center">
 
-# LMGame Reinforcement Learning
+# GRL: Game Reinforcement Learning for Post‑training LLMs
+
+<em>Game Reinforcement Learning (GRL) for post‑training large language models</em>
 
 </div>
 
@@ -10,7 +12,7 @@
 <div align="center">
 
 
-[![Github](https://img.shields.io/badge/LMGameRL-000000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/lmgame-org/LMGameRL)
+[![Github](https://img.shields.io/badge/GRL-000000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/lmgame-org/GRL)
 [![Website](https://img.shields.io/badge/Site-%23000000.svg?style=for-the-badge&logo=semanticweb&logoColor=white)](https://lmgame.org) 
 [![arXiv](https://img.shields.io/badge/arXiv-2505.15146-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2505.15146)
 [![X (Twitter)](https://img.shields.io/badge/Follow-HaoAILab-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/haoailab)
@@ -20,22 +22,22 @@
 
 </div>
 
-LMGameRL is an open‑source framework that post‑trains LLMs via multi-turn reinforcement learning on games, yielding general gains across diverse benchmarks.
+GRL (Game Reinforcement Learning) is an open‑source framework that post‑trains LLMs via multi‑turn reinforcement learning on games, yielding general gains across diverse benchmarks.
 
 ## Release
-<strong>[2025/08/13]</strong> We release LMGameRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning.
+<strong>[2025/08/13]</strong> We release GRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning.
 
 
 ## Installation
 
    ```bash
    # clone the repo
-   git clone --recurse-submodules https://github.com/lmgame-org/LMGameRL.git
-   cd LMGameRL
+    git clone --recurse-submodules https://github.com/lmgame-org/GRL.git
+    cd GRL
 
    # create a conda environment
-   conda create --name lmgamerl python=3.10
-   conda activate lmgamerl
+    conda create --name grl python=3.10
+    conda activate grl
 
    # install all dependencies
    source scripts/install_submodules.sh

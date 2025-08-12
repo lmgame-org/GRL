@@ -3,14 +3,14 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lmgamerl"
+name = "grl"
 version = "0.1.0"
 description = "Multi-Turn RL Training System with AgentTrainer for Language Model Game Reinforcement Learning"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "lmgamerl Team"},
+    {name = "lmgame Team"},
 ]
 keywords = [
     "reinforcement learning", 
@@ -132,7 +132,7 @@ jupyter = [
 ]
 
 [project.scripts]
-lmgamerl-train = "lmgamerl.train:main"
+grl-train = "grl.train:main"
 
 [project.urls]
 Homepage = "https://github.com/mignonjia/lmgame_train_reorg"
@@ -141,11 +141,11 @@ Homepage = "https://github.com/mignonjia/lmgame_train_reorg"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lmgamerl*"]
+include = ["grl*"]
 exclude = ["tests*", "scripts*", "verl*", "external*"]
 
 [tool.setuptools.package-data]
-"lmgamerl" = ["*.md", "*.txt", "*.yaml", "*.yml", "*.json"]
+"grl" = ["*.md", "*.txt", "*.yaml", "*.yml", "*.json"]
 
 [tool.black]
 line-length = 120
