@@ -91,13 +91,9 @@ Each game is trained twice. Reported values correspond to the step at which the 
 
 
 |                  | Sokoban 6×6 | Sokoban 8×8 | Tetris (1 type) | Tetris (2 types) | Blocksworld (text) |
-
 |------------------|-------------|-------------|-----------------|------------------|--------------------|
-
 | Qwen2.5-7B-Instruct | 12.7        | 5.5         | 2.2             | 9.9              | 67.3               |
-
 | Train on Sokoban | **26.6**     | **7.4**     | 4.5             | 13.1             | **72.2**           |
-
 | Train on Tetris  | 15.1         | 7.2         | **58.4**        | **23.1**         | 64.7               |
 
 
@@ -111,13 +107,9 @@ Each game is trained twice. Reported values correspond to the step at which the 
 
 
 |                  | Blocksworld (1d) | Blocksworld (2d) | GSM8K (1 turn) | GSM8K (5 turns) | WebShop |
-
 |------------------|------------------|------------------|----------------|-----------------|---------|
-
 | Qwen2.5-7B-Instruct | 17.3             | 13.5             | **88.3**       | 94.1            | 9.0     |
-
 | Train on Sokoban | **24.3**          | 17.9             | 87.3           | 93.8            | 15.0    |
-
 | Train on Tetris  | 20.8              | **20.6**         | 89.1           | **94.5**        | **15.8** |
 
 
