@@ -1,4 +1,4 @@
-## LMGameRL — Customizing Training (Quick Start & Configuration)
+## GRL — Customizing Training (Quick Start & Configuration)
 
 This guide shows how to quickly run training and how to customize everything from basic runtime knobs to fine‑grained agent, environment, and PPO settings.
 
