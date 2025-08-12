@@ -73,6 +73,12 @@ source quick_train_qwen_halfb.sh
 
 ![Table 4: Model performance on diverse tasks](docs/assets/table4.png)
 
+### Expected Observed validation success rate curves (examples)
+
+
+![Examples of observed validation success rate curves](docs/assets/example_validation_success_curves.png)
+
+
 > **Note:** RL training results may fluctuate relative to reported results, but the overall trend and gains remain consistent.
 
 **Sokoban Agent Training:**
