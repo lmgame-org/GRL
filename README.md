@@ -32,12 +32,12 @@ GRL (Game Reinforcement Learning) is an open‑source framework that post‑trai
 
    ```bash
    # clone the repo
-    git clone --recurse-submodules https://github.com/lmgame-org/GRL.git
-    cd GRL
+   git clone --recurse-submodules https://github.com/lmgame-org/GRL.git
+   cd GRL
 
    # create a conda environment
-    conda create --name grl python=3.10
-    conda activate grl
+   conda create --name grl python=3.10
+   conda activate grl
 
    # install all dependencies
    source scripts/install_submodules.sh
