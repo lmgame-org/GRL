@@ -1,4 +1,4 @@
-# LMGame Reinforcement Learning 🚀
+# GRL (Game Reinforcement Learning) 🚀
 
 
 
@@ -14,31 +14,11 @@
 
 **TL;DR** 🧪  
 
-LMGame RL is a framework for multi-turn reinforcement learning training of LLMs, designed to study generalization. Not limited to game-based tasks, it can be applied to train and/or evaluate diverse tasks with verifiable rewards, such as math and coding.
+GRL (Game Reinforcement Learning)  is an **agent-centric** framework for multi-turn reinforcement learning of LLMs, designed to study **generalization**. While well-suited for game-based tasks, it extends naturally to training and evaluating diverse domains with verifiable rewards—including math, coding, and beyond.  
+
+Experiments show that training on board games such as Sokoban and Tetris can drive cross-game transfer improving planning ability and overall agentic task performance.
 
 
-
-Our experiments show that training on board games such as Sokoban and Tetris can drive cross-game transfer and enhance planning and agentic task performance.
-
-
-
----
-
-
-
-## GRL: Lightweight, scalable RL for LLM ability gains
-
-
-
-This repo provides a light, scalable workflow to study how RL training improves LLM general ability. To evaluate transferability, run a simple experiment using one script that trains on small 6×6 Sokoban levels and then tests performance on other domains such as Tetris, Blocksworld or GSM8K. Common training and validation hyperparameters (GPUs, model name, training/validation tasks, group numbers/sizes) are edited directly inside the provided script for a fast, frictionless iteration loop.
-
-
-
-```bash
-
-source quick_train_qwen_halfb.sh
-
-```
 
 
 
@@ -46,27 +26,35 @@ source quick_train_qwen_halfb.sh
 
 
 
-## Agent–Environment design for high customization
+##GRL is an agent centric design for 
 
 
+### 1. **Agent-Centric Reinforcement Learning (GRL)**
+Our framework treats each *agent unit* as a self-contained rollout manager—controlling the entire lifecycle from task assignment to execution and feedback. This encapsulation is driven by two declarative configs:
+- **`agent_config`**: Governs the LLM interaction—defines prompts, reasoning structure, token and turn budgets, action formatting, etc.
+- **`env_config`**: Dictates environment behavior—task dynamics, grid sizes, render modes, vocabularies, datasets, and gym-style dynamics.
 
-Agents and environments are defined declaratively in `configs/agents.yaml`. The `agent_config` controls the full LLM interaction lifecycle—system/prompt design, thinking, turn budgets, action formatting—and orchestrates how the model proposes actions and parses answers.
+This separation ensures each agent is **completely modular and self-contained**, which:
+- Makes debugging straightforward and localized.
+- Enables clean extensibility across diverse environment types.
+- Enhances scalability by reducing cross-agent interference and simplifying configuration management.
 
+## GRL vs. verl-agent vs. RAGEN
 
-
-The `env_config` controls the task dynamics and difficulty—grid sizes, steps, datasets, render modes, and vocab/lookups—mapping to the corresponding implementation under `grl/agents/*`. You can add your own environment or agent by following the base interfaces in `grl/agents/base_agent.py` and `grl/agents/base_env.py`, then registering a new keyed entry in `agents.yaml`.
-
-
-
-To customize a workflow: create or tweak a task entry (choose an `agent_type`, set `agent_config` and `env_config`), then select it in the script via `TRAINING_TASKS` and `VALIDATION_TASKS`. Typical sizing like training 8×16 and validation 64×1 offers fast, stable signal; groups share seeds within a group and differ across groups, enabling reproducible yet diverse rollouts. Mix multiple validation tasks to probe scaling and cross-domain generalization with minimal overhead.
-
-
+| Feature / Aspect          | **GRL (Ours)** – Advantage | verl-agent | RAGEN |
+|---------------------------|---------------------------|------------|-------|
+| **Design Focus**          | **Agent-centric**: each agent unit controls full rollout lifecycle | Gym-style multi-turn rollouts, less explicit agent isolation | Trajectory-level RL, less agent identity focus |
+| **Config Structure**      | **Clear split**: `agent_config` (LLM behavior) + `env_config` (environment) | Mixed configs, memory modules, less separation | Unified config, environment-focused |
+| **Scalability**           | **High** – modular agents scale cleanly across diverse envs | High throughput, grouped rollouts | Modular but less per-agent isolation |
+| **Debugging Ease**        | **Easy** – localized to single agent unit | Possible, but configs less explicit | More global-level tuning required |
+| **Cross-Domain Transfer** | **Built-in** – train/validate within isolated agent units | Possible with custom envs | Focused on stochastic env optimization |
+| **Customization**         | **High** – plug-and-play new agents/envs | Flexible, but less structured | Flexible, but environment-centric |
 
 (Please check [TUTORIAL.md](https://github.com/lmgame-org/GRL/blob/main/docs/TUTORIAL.md) for further details)
 
 
-
 ---
+
 
 
 
