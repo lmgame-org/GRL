@@ -58,6 +58,12 @@ class PpoLearner(_BasePpoLearner):
         reward_fns=reward_fns,
         data_shuffle_seed=data_shuffle_seed,
     )
+    # ─────────────────── MODIFICATION: Multi-turn rollout manager (to be integrated) ───────────────────
+    # Placeholder: initialize self.multi_turn_rollout here when adopting multi-turn Tunix rollout
+    # Example:
+    #   from grl.rollout.tunix_sync_multi_turn_rollout import SyncMultiTurnRollout
+    #   self.multi_turn_rollout = SyncMultiTurnRollout(actor_rollout_wg=..., cfg=..., tokenizer=...)
+    # ─────────────────── END MODIFICATION ───────────────────
   def _generate_and_compute_advantage(
       self,
       training_input: _TrainingInputT,
@@ -78,10 +84,10 @@ class PpoLearner(_BasePpoLearner):
     max_prompt_length = (
         self.rl_cluster.cluster_config.rollout_config.max_prompt_length
     )
-
-    # ===== Generation ======
-    # Generate. We use `model`, i.e., the policy model for generating the
-    # "experiences".
+    # ─────────────────── MODIFICATION: Replace single-turn rl_cluster.generate with multi-turn rollout ───────────────────
+    # Current behavior: single-turn sampling using rl_cluster.generate(prompts=...)
+    # Planned change: use self.multi_turn_rollout.rollout() and build PPO batch from trajectories
+    # to produce prompt_ids, completion_ids, masks, scores, etc.
     completion_output = self.rl_cluster.generate(
         prompts=training_input["prompts"],
     )
@@ -102,6 +108,7 @@ class PpoLearner(_BasePpoLearner):
         jnp.arange(batch_size)[is_padding_token],
         (eos_idx + 1)[is_padding_token],
     ].set(True)
+    # ─────────────────── END MODIFICATION ───────────────────
 
     # ===== Compute log probs ======
     logits_to_keep = completion_ids.shape[1]
@@ -337,6 +344,11 @@ class PpoLearner(_BasePpoLearner):
     Returns:
       None. Examples are put into the data queue.
     """
+    # ─────────────────── MODIFICATION: Rollout-generated batches (no dataloaders) ───────────────────
+    # Future change: instead of advancing an input iterator, call
+    # self.multi_turn_rollout.rollout(), then convert outputs to TrainExample
+    # and queue them directly.
+    # ─────────────────── END MODIFICATION ───────────────────
     example_list = []
 
     def _put_list_of_examples_to_data_queue():
@@ -481,5 +493,6 @@ class PpoLearner(_BasePpoLearner):
           break
       except StopIteration:
         break
+      
     self.rl_cluster.actor_trainer.close()
     self.rl_cluster.critic_trainer.close()
