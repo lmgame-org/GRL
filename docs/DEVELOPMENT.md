@@ -42,7 +42,7 @@ Location: `trainer/agent_trainer.py`
 - [✅] Test general ability across all envs
 
 #### 2.5 Trainers & Extensibility
-- [ ] JAX PPO trainer integration
+- [ ] JAX PPO trainer integration ([Tunix Integration Plan](TUNIX_INTEGRATION.md))
 - [ ] Abstract the framework to integrate different trainers
 
 #### 2.6 Tooling & Build
