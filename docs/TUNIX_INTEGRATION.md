@@ -17,36 +17,6 @@ References:
 
 ## Architecture Overview (Tunix integration)
 
-```mermaid
-flowchart LR
-  %% Styling
-  classDef box fill:#f8f9fb,stroke:#7f8c8d,stroke-width:1px,color:#2c3e50;
-  classDef focus fill:#eef7ff,stroke:#2980b9,stroke-width:1px,color:#1b4f72;
-  classDef step fill:#fef9e7,stroke:#b7950b,stroke-width:1px,color:#7d6608;
-
-  subgraph CFG["Config & Setup"]
-    A1["Hydra cfg\n(tunix_base.yaml + tunix_ppo_trainer.yaml)"]:::box
-    A2["Build Mesh · Optimizer\nAdamW + WarmupCosine"]:::box
-    A3["Load Models · Tokenizer\n(actor, reference)"]:::box
-    A4["ClusterConfig + RolloutConfig\nrl_cluster"]:::box
-    A1 --> A2 --> A3 --> A4
-  end
-
-  subgraph TRT["TunixAgentTrainer"]
-    T0["Init multi‑turn rollout mgr\n(tunix_sync_multi_turn_rollout)"]:::focus
-    T1["Per‑turn: get_batch_llm_prompts"]:::step
-    T2["Per‑turn: generate_sequences\n(Tunix rollout engine)"]:::step
-    T3["Per‑turn: env step · update done · metrics"]:::step
-    T4["Build PPO batch / TrainExample"]:::focus
-    T5["Compute advantages"]:::focus
-    T6["Update actor / critic"]:::focus
-    T7["Sync weights / validate"]:::focus
-    T0 --> T1 --> T2 --> T3 --> T4 --> T5 --> T6 --> T7 --> T1
-  end
-
-  A4 --> T0
-```
-
 Key idea: Swap `rl_cluster.generate(prompts=...)` with a multi‑turn rollout that batches prompts each turn, calls the Tunix rollout engine under the hood, and returns the tensors needed for PPO/GRPO.
 
 ---
