@@ -44,6 +44,8 @@ Location: `trainer/agent_trainer.py`
 #### 2.5 Trainers & Extensibility
 - [ ] JAX PPO trainer integration ([Tunix Integration Plan](TUNIX_INTEGRATION.md))
   - [ ] write tunix_sync_multi_turn_rollout.py
+    - [✅] finish tunix multi turn rollout part
+    - [ ] verify the final results ids
   - [ ] integrate it with tunix_agent_trianer.py
   - [ ] test the training workflow in tunix_train.py
 - [ ] Abstract the framework to integrate different trainers

@@ -3,14 +3,10 @@ from typing import List, Dict, Any, Union
 import os
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
-import torch
-from verl import DataProto
-from verl.utils.dataset.rl_dataset import collate_fn
-import verl.utils.torch_functional as verl_F
 from grl.agents import get_agent_cls, REGISTERED_AGENTS
+import jax.numpy as jnp
+import jax
 import numpy as np
-from tensordict import TensorDict
-
 
 class SyncMultiTurnRollout:
     """
@@ -22,7 +18,7 @@ class SyncMultiTurnRollout:
     """
 
     # ─────────────────── INITIALIZATION ───────────────────
-    def __init__(self, actor_rollout_wg, cfg, tokenizer, processor, validation=False):
+    def __init__(self, rl_cluster, cfg, tokenizer, processor, validation=False):
         """evaluate the transferability to Tetris, Blocksworld, and GSM8K.
         Initialize rollout manager. Agent class is resolved from config.
         
@@ -35,7 +31,7 @@ class SyncMultiTurnRollout:
         self.cfg = cfg
         self.tokenizer = tokenizer
         self.processor = processor
-        self.actor_wg = actor_rollout_wg
+        self.rl_cluster = rl_cluster
         
         # Calculate total agents from agent_group_num * agent_group_size
         if validation:
@@ -141,22 +137,26 @@ class SyncMultiTurnRollout:
             done_groups += self.agent_group_num_list[i]
         
         # Initialize tracking structures - actual env_outs will be set in rollout()
-        self.done_mask = torch.zeros(self.total_agent_num, dtype=torch.bool)
+        self.done_mask = jnp.zeros(self.total_agent_num, dtype=jnp.bool_)
         self.env_outs = None  # Will be initialized in _reset_batch_agents()
 
     # ─────────────────── BATCH LLM PROMPTS ───────────────────
-    def get_batch_llm_prompts(self, env_outputs):
+    def get_batch_llm_prompts(self, env_outputs: list) -> list[str]:
         """
-        Generate batch of LLM prompts from environment outputs.
-        Each agent.get_llm_prompts(env_out) returns messages format.
-        
+        Generate a batch of prompt strings from environment outputs.
+
+        Each agent provides messages via agent.get_llm_prompts(env_out), which
+        are rendered with the tokenizer's chat template. Optionally appends
+        a think/answer control token per agent config.
+
         Args:
-            env_outputs: List of environment outputs from agents
-            
+            env_outputs: List of per-agent environment outputs (opaque objects
+                consumed by the agents' get_llm_prompts).
+
         Returns:
-            DataProto: Batched DataProto containing input_ids, attention_mask, position_ids
+            List[str]: Prompt strings, one per agent (left-padding handled later).
         """
-        llm_input_texts = [""] * len(env_outputs)
+        llm_prompts = [""] * len(env_outputs)
 
         def build_prompt(idx_env_out):
             idx, env_out = idx_env_out
@@ -179,66 +179,42 @@ class SyncMultiTurnRollout:
             if self.show_tqdm:
                 iterator = tqdm(iterator, total=len(env_outputs), desc="rollout/prompts", leave=False)
             for idx, prompt in iterator:
-                llm_input_texts[idx] = prompt
+                llm_prompts[idx] = prompt
         
-        # Tokenize all prompts using verl_F for more universal processing
-        batch_list = []
-        
-        def tokenize_one(prompt_str: str):
-            if not prompt_str or len(prompt_str.strip()) == 0:
-                prompt_str = "Please respond."
-            try:
-                input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
-                    prompt=prompt_str,
-                    tokenizer=self.tokenizer,
-                    max_length=self.cfg.max_prompt_length,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    left_pad=True,
-                    truncation=self.cfg.rollout.truncation,
-                )
-            except Exception:
-                input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
-                    prompt="Please respond.",
-                    tokenizer=self.tokenizer,
-                    max_length=self.cfg.max_prompt_length,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    left_pad=True,
-                    truncation=self.cfg.rollout.truncation,
-                )
-            from verl.utils.model import compute_position_id_with_mask
-            position_ids = compute_position_id_with_mask(attention_mask)
-            return {
-                'input_ids': input_ids.squeeze(0),
-                'attention_mask': attention_mask.squeeze(0),
-                'position_ids': position_ids.squeeze(0),
-                'responses': input_ids.squeeze(0)[1:],
-            }
+        return llm_prompts
 
-        with ThreadPoolExecutor(max_workers=self.num_prompt_threads) as ex:
-            iterator = ex.map(tokenize_one, llm_input_texts)
-            if self.show_tqdm:
-                iterator = tqdm(iterator, total=len(llm_input_texts), desc="rollout/tokenize", leave=False)
-            for row_dict in iterator:
-                batch_list.append(row_dict)
-        
-        # Use collate_fn to batch the data, then convert to DataProto
-        try:
-            batch_dict = collate_fn(batch_list)
-            result_dataproto = DataProto.from_single_dict(batch_dict)
-            return result_dataproto
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            raise
+    # ─────────────────── RESPONSE DECODING HELPERS ───────────────────
+    def tokens_to_text(self, token_seqs) -> list[str]:
+        """
+        Convert a batch of token id sequences to strings using the tokenizer.
+        Accepts array-like inputs (e.g., JAX or numpy arrays) and returns List[str].
+        """
+        arr = np.array(token_seqs)
+        return self.tokenizer.batch_decode(arr, skip_special_tokens=True)
+
+    def decode_llm_responses(self, llm_responses) -> list[str]:
+        """
+        Decode rollout responses into a list of strings.
+        Supports objects with `.text` (List[str]) or `.tokens` fields
+        like rl_cluster.generate() RolloutOutput, or a raw List[str].
+        """
+        if isinstance(llm_responses, list) and all(isinstance(x, str) for x in llm_responses):
+            return llm_responses
+        if hasattr(llm_responses, "text") and isinstance(llm_responses.text, list):
+            return llm_responses.text
+        if hasattr(llm_responses, "tokens"):
+            return self.tokens_to_text(llm_responses.tokens)
+        raise TypeError(
+            "Unsupported llm_responses type: expected List[str] or RolloutOutput with .text or .tokens."
+        )
 
     # ─────────────────── BATCH ENV OUTPUTS ───────────────────
-    def get_batch_env_outputs(self, lm_outputs):
+    def get_batch_env_outputs(self, llm_responses_str: list[str]):
         """
         Process LLM outputs and update environment outputs for all agents.
         
         Args:
-            lm_outputs: DataProto containing LLM responses
+            llm_responses_str: List[str] decoded responses from the model, one per agent.
             
         Returns:
             List: Updated environment outputs from all agents
@@ -246,18 +222,12 @@ class SyncMultiTurnRollout:
         # Ensure env_outs is initialized (should be done by _reset_batch_agents)
         if self.env_outs is None:
             raise RuntimeError("env_outs not initialized. Call rollout() or _reset_batch_agents() first.")
-        
-        # Decode responses
-        replies = self.tokenizer.batch_decode(
-            lm_outputs.batch["responses"], 
-            skip_special_tokens=True
-        )
 
         # Update environment outputs for all agents in parallel
-        updated_env_outs = [None] * len(replies)
+        updated_env_outs = [None] * len(llm_responses_str)
 
-        def step_one(i_reply):
-            idx, reply = i_reply
+        def step_one(i_response):
+            idx, reply = i_response
             if self.done_mask[idx]:
                 return idx, self.env_outs[idx], True
             agent = self.agents[idx]
@@ -266,47 +236,27 @@ class SyncMultiTurnRollout:
             return idx, env_out, is_done
 
         with ThreadPoolExecutor(max_workers=self.num_env_threads) as ex:
-            iterator = ex.map(step_one, enumerate(replies))
+            iterator = ex.map(step_one, enumerate(llm_responses_str))
             if self.show_tqdm:
-                iterator = tqdm(iterator, total=len(replies), desc="rollout/env", leave=False)
+                iterator = tqdm(iterator, total=len(llm_responses_str), desc="rollout/env", leave=False)
             for idx, env_out, is_done in iterator:
                 updated_env_outs[idx] = env_out
                 self.env_outs[idx] = env_out
                 self.done_mask[idx] = is_done
 
         return updated_env_outs
-
     # ─────────────────── LLM GENERATION ───────────────────
-    def generate_sequences(self, lm_inputs: DataProto):
+    def generate_sequences(self, llm_prompts: list[str]):
         """
-        Generate sequences using the actor worker group.
+        Generate sequences using the rollout cluster from a batch of LLM prompts.
         
         Args:
-            lm_inputs: DataProto containing input_ids, attention_mask, position_ids
+            llm_prompts: List[str] prompts (already templated), one per agent
             
         Returns:
-            DataProto: Generated sequences
+            RolloutOutput: The rollout output containing text/tokens for completions
         """
-        # TODO: add kv cache both for the vllm wrapper here and for verl vllm.
-        try:
-            from verl.trainer.ppo.ray_trainer import RayWorkerGroup
-            from verl.utils.dataset.rl_dataset import pad_dataproto_to_divisor, unpad_dataproto
-        except ImportError:
-            RayWorkerGroup = None
-            pad_dataproto_to_divisor = None
-            unpad_dataproto = None
-        
-        if (RayWorkerGroup is not None and isinstance(self.actor_wg, RayWorkerGroup) and 
-            pad_dataproto_to_divisor is not None and unpad_dataproto is not None):
-            padded_lm_inputs, pad_size = pad_dataproto_to_divisor(lm_inputs, self.actor_wg.world_size)
-            padded_lm_outputs = self.actor_wg.generate_sequences(padded_lm_inputs)
-            lm_outputs = unpad_dataproto(padded_lm_outputs, pad_size=pad_size)
-            lm_outputs.meta_info = lm_inputs.meta_info
-            lm_outputs.non_tensor_batch = lm_inputs.non_tensor_batch
-        else:
-            lm_outputs = self.actor_wg.generate_sequences(lm_inputs)
-        
-        return lm_outputs
+        return self.rl_cluster.generate(llm_prompts)
 
     # ─────────────────── MAIN ROLLOUT LOOP ───────────────────
     def rollout(self):
@@ -321,13 +271,14 @@ class SyncMultiTurnRollout:
                 break
 
             # Generate batch of LLM prompts from current env outputs
-            batch_prompts = self.get_batch_llm_prompts(self.env_outs)
+            batch_llm_prompts = self.get_batch_llm_prompts(self.env_outs)
             
             # Generate responses using batch dispatch
-            lm_outputs = self.generate_sequences(batch_prompts)
+            llm_responses = self.generate_sequences(batch_llm_prompts)
             
-            # Process LLM outputs and update environment outputs
-            self.env_outs = self.get_batch_env_outputs(lm_outputs)
+            # Decode responses and update environment outputs
+            llm_responses_str = self.decode_llm_responses(llm_responses)
+            self.env_outs = self.get_batch_env_outputs(llm_responses_str)
 
             
             self.step_cnt += 1
@@ -335,13 +286,13 @@ class SyncMultiTurnRollout:
 
     # ─────────────────── PPO BATCH BUILDING ───────────────────
 
-    def get_masks_and_scores(self, input_ids: torch.Tensor, all_scores: List[List[float]] | None = None, use_turn_scores: bool = False):
+    def get_masks_and_scores(self, input_ids: jnp.ndarray, all_scores: List[List[float]] | None = None, use_turn_scores: bool = False):
         """
         Get loss mask that only learns between <|im_start|>assistant and <|im_end|>. Currently only supports qwen.
         NOTE: This assumes that the input_ids starts with system and then user & assistant in alternative ways
         
         Args:
-            input_ids: shape (bsz, seq_len)
+            input_ids: jax.Array with shape (bsz, seq_len)
             all_scores: List of score lists for each agent
             use_turn_scores: Whether to use turn-based scores
             
@@ -349,35 +300,40 @@ class SyncMultiTurnRollout:
             Tuple of (loss_mask, score_tensor, response_mask)
         """
         special_token = self.tokenizer.encode("<|im_start|>")[0]
-        turn_starts = torch.where(input_ids == special_token, 1, 0)
-        turn_indicators = torch.cumsum(turn_starts, dim=-1)
-        response_mask = (turn_indicators % 2 == 1) & (turn_indicators > 1) # only learns all assistant turns
-        loss_mask = (turn_indicators > 1) # learns everything after system prompt
+        turn_starts = jnp.where(input_ids == special_token, 1, 0)
+        turn_indicators = jnp.cumsum(turn_starts, axis=-1)
+        response_mask = (turn_indicators % 2 == 1) & (turn_indicators > 1)  # only learns all assistant turns
+        loss_mask = (turn_indicators > 1)  # learns everything after system prompt
 
         reward_token = self.tokenizer.encode("<|im_end|>")[0]
-        score_tensor = torch.zeros_like(input_ids, dtype=torch.float32)
+        score_tensor = jnp.zeros(input_ids.shape, dtype=jnp.float32)
         if all_scores is not None:
             if use_turn_scores:
-                for idx, scores in enumerate(list(zip(*all_scores))):
-                    scores = torch.tensor(scores, dtype=torch.float32)
-                    turn_indicator = idx * 2 + 3 # 0: pad. 1: system. 2+2n: user. 3+2n: assistant
+                # Transpose list-of-lists to iterate over turn index
+                for idx, scores_per_turn in enumerate(list(zip(*all_scores))):
+                    scores_arr = jnp.array(scores_per_turn, dtype=jnp.float32)  # shape: [bsz]
+                    turn_indicator = idx * 2 + 3  # 0: pad. 1: system. 2+2n: user. 3+2n: assistant
                     reward_position = (input_ids == reward_token) & (turn_indicators == turn_indicator)
-                    score_tensor[reward_position] = scores
+                    # Broadcast scores to (bsz, seq_len)
+                    broadcast_scores = jnp.expand_dims(scores_arr, axis=1)
+                    score_tensor = score_tensor + jnp.where(reward_position, broadcast_scores, 0.0)
             else:
-                scores = [sum(i) for i in all_scores]
-                score_tensor[:, -1] = torch.tensor(scores, dtype=torch.float32)
-        loss_mask = loss_mask[:, :-1] # remove the last token
-        score_tensor = score_tensor[:, 1:] # remove the first token
+                seq_scores = jnp.array([sum(x) for x in all_scores], dtype=jnp.float32)
+                score_tensor = score_tensor.at[:, -1].set(seq_scores)
+
+        # Align shapes with loss calculation: remove last from loss_mask, first from scores
+        loss_mask = loss_mask[:, :-1]
+        score_tensor = score_tensor[:, 1:]
 
         return loss_mask, score_tensor, response_mask
 
-    def _normalize_score_tensor(self, score_tensor: torch.Tensor, env_outputs: List[Dict]) -> torch.Tensor:
+    def _normalize_score_tensor(self, score_tensor: jnp.ndarray, env_outputs: List[Dict]) -> jnp.ndarray:
         """
         Normalize the score tensor to be between 0 and 1.
         NOTE: only support score at the last token for now
         """
         assert self.cfg.rollout.use_turn_scores == False, "Reward normalization is not supported for use_turn_scores == True"
-        
+
         rn_cfg = self.cfg.rollout.reward_normalization
         grouping, method = rn_cfg.grouping, rn_cfg.method
         if grouping == "state":
@@ -389,83 +345,135 @@ class SyncMultiTurnRollout:
         else:
             raise ValueError(f"Invalid grouping: {grouping}")
 
-        if method == "mean_std":
-            norm_func = lambda x: (x - x.mean(dim=-1, keepdim=True)) / (x.std(dim=-1, keepdim=True) + 1e-6) if x.std(dim=-1, keepdim=True).abs().max() > 1e-6 else torch.zeros_like(x) # stable to bf16 than x.std()
-        elif method == "mean":
-            norm_func = lambda x: (x - x.mean(dim=-1, keepdim=True))
-        elif method == "asym_clip":
-            norm_func = lambda x: ((x - x.mean(dim=-1, keepdim=True)) / (x.std(dim=-1, keepdim=True) + 1e-6) if x.std(dim=-1, keepdim=True).abs().max() > 1e-6 else torch.zeros_like(x)).clamp(min=-1, max=3)
-        elif method == "identity":
-            norm_func = lambda x: x
-        else:
-            raise ValueError(f"Invalid normalization method: {method}")
-
-        # Apply groupwise normalization
+        # Build group -> indices mapping
         group2index = {}
         for i, env_tag in enumerate(group_tags):
             if env_tag not in group2index:
                 group2index[env_tag] = []
             group2index[env_tag].append(i)
-        group2index = {k: torch.tensor(v) for k, v in group2index.items()}
 
+        # Normalize group-wise using JAX ops
         acc_scores = score_tensor[:, -1]
-        normalized_acc_scores = acc_scores.clone()
-        for group, index in group2index.items():
-            normalized_acc_scores[index] = norm_func(normalized_acc_scores[index])
+        normalized_acc_scores = acc_scores
 
-        # Apply penalty
-        penalty = torch.tensor([env_output["penalty"] for env_output in env_outputs], dtype=torch.float32)
+        for _, indices in group2index.items():
+            idx_arr = jnp.array(indices, dtype=jnp.int32)
+            group_vals = acc_scores[idx_arr]
+            if method == "mean_std":
+                mu = jnp.mean(group_vals)
+                sigma = jnp.std(group_vals)
+                cond = jnp.abs(sigma) > 1e-6
+                normed = jnp.where(cond, (group_vals - mu) / (sigma + 1e-6), jnp.zeros_like(group_vals))
+            elif method == "mean":
+                mu = jnp.mean(group_vals)
+                normed = group_vals - mu
+            elif method == "asym_clip":
+                mu = jnp.mean(group_vals)
+                sigma = jnp.std(group_vals)
+                cond = jnp.abs(sigma) > 1e-6
+                normed = jnp.where(cond, (group_vals - mu) / (sigma + 1e-6), jnp.zeros_like(group_vals))
+                normed = jnp.clip(normed, a_min=-1.0, a_max=3.0)
+            elif method == "identity":
+                normed = group_vals
+            else:
+                raise ValueError(f"Invalid normalization method: {method}")
+
+            normalized_acc_scores = normalized_acc_scores.at[idx_arr].set(normed)
+
+        # Apply penalty (JAX)
+        penalty = jnp.array([env_output["penalty"] for env_output in env_outputs], dtype=jnp.float32)
         normalized_acc_scores = normalized_acc_scores + penalty
 
-        score_tensor[:, -1] = normalized_acc_scores
+        # Write back to the last position
+        score_tensor = score_tensor.at[:, -1].set(normalized_acc_scores)
 
         return score_tensor
 
-    def filter_rollout(self, rollout_batch: DataProto) -> DataProto:
+    def filter_rollout(self, rollout_batch):
         """
-        Filter rollout batch based on the filter ratio.
+        Filter rollout batch using JAX, no DataProto or numpy.
+
+        Expects `rollout_batch` to be a dict-like with at least:
+          - 'rm_scores': jnp.ndarray of shape [N, T]
+        Optionally contains other fields (jnp.ndarray with leading dim N) and
+        an optional 'non_tensor_batch' dict whose values are jnp.ndarray or lists
+        of length N. These will be filtered consistently.
+
+        Returns (filtered_rollout_batch, metrics_dict)
         """
         rollout_filter_ratio = self.cfg.rollout.rollout_filter_ratio
 
-        # ad hoc set the agent_group_num and agent_group_size, assuming only one type of agent in training
+        # Determine grouping geometry (assumes single agent type in training)
         num_groups, group_size = self.agent_group_num_list[0], self.agent_group_size_list[0]
-        
-        rm_scores = rollout_batch.batch["rm_scores"].sum(dim=-1).view(num_groups, group_size)
-        
+
+        # Scores: [N, T] → per-sample scalar [N] → reshape to [G, S]
+        rm_scores = jnp.array(rollout_batch["rm_scores"])  # [N, T]
+        per_sample = jnp.sum(rm_scores, axis=-1)  # [N]
+        group_scores = jnp.reshape(per_sample, (num_groups, group_size))  # [G, S]
+
         selected_groups = int(rollout_filter_ratio * num_groups)
 
-        in_group_std = rm_scores.std(dim=-1)
-        in_group_max = rm_scores.max(dim=-1).values
-        in_group_mean = rm_scores.mean(dim=-1)
-        if rollout_filter_ratio == 1:
-            return rollout_batch, {"rollout/in_group_std": in_group_std.mean(), "rollout/in_group_max": in_group_max.mean(), "rollout/in_group_mean": in_group_mean.mean(), "rollout/chosen_in_group_std": in_group_std.mean(), "rollout/chosen_in_group_max": in_group_max.mean(), "rollout/chosen_in_group_mean": in_group_mean.mean()}
+        # Group statistics
+        in_group_std = jnp.std(group_scores, axis=-1)   # [G]
+        in_group_max = jnp.max(group_scores, axis=-1)   # [G]
+        in_group_mean = jnp.mean(group_scores, axis=-1) # [G]
 
+        if rollout_filter_ratio == 1:
+            metrics = {
+                "rollout/in_group_std": float(jnp.mean(in_group_std)),
+                "rollout/in_group_max": float(jnp.mean(in_group_max)),
+                "rollout/in_group_mean": float(jnp.mean(in_group_mean)),
+                "rollout/chosen_in_group_std": float(jnp.mean(in_group_std)),
+                "rollout/chosen_in_group_max": float(jnp.mean(in_group_max)),
+                "rollout/chosen_in_group_mean": float(jnp.mean(in_group_mean)),
+            }
+            return rollout_batch, metrics
+
+        # Select top groups by std (or reverse)
         if self.cfg.rollout.rollout_filter_type == "std_rev":
-            top_groups = (-in_group_std).topk(int(rollout_filter_ratio * num_groups)).indices
+            vals = -in_group_std
         elif self.cfg.rollout.rollout_filter_type == "std":
-            top_groups = in_group_std.topk(int(rollout_filter_ratio * num_groups)).indices
+            vals = in_group_std
         else:
             raise ValueError(f"Invalid rollout filter type: {self.cfg.rollout.rollout_filter_type}")
-        
-        mask = torch.zeros(num_groups, dtype=torch.bool)
-        mask[top_groups] = True
-        mask = mask.unsqueeze(1).expand(-1, group_size).flatten()
 
-        rollout_batch.batch = rollout_batch.batch[mask]
-        
-        for key, value in rollout_batch.non_tensor_batch.items():
-            if isinstance(value, np.ndarray):
-                rollout_batch.non_tensor_batch[key] = value[mask]
-            else:
-                rollout_batch.non_tensor_batch[key] = [v for v, m in zip(value, mask) if m]
+        _, top_idx = jax.lax.top_k(vals, k=selected_groups)  # [K]
 
+        # Build flat indices to keep: each selected group keeps all its members
+        base = top_idx * group_size                 # [K]
+        offsets = jnp.arange(group_size)            # [S]
+        keep_idx = (base[:, None] + offsets[None, :]).reshape(-1)  # [K*S]
+
+        # Filter tensor fields (leading dim N)
+        N = per_sample.shape[0]
+        for key, arr in list(rollout_batch.items()):
+            if key == "non_tensor_batch":
+                continue
+            if isinstance(arr, jnp.ndarray) and arr.shape[:1] == (N,):
+                rollout_batch[key] = arr[keep_idx]
+
+        # Filter non-tensor fields
+        if "non_tensor_batch" in rollout_batch and isinstance(rollout_batch["non_tensor_batch"], dict):
+            ntb = rollout_batch["non_tensor_batch"]
+            keep_idx_list = list(map(int, keep_idx.tolist()))
+            for key, value in list(ntb.items()):
+                try:
+                    if isinstance(value, jnp.ndarray) and value.shape[:1] == (N,):
+                        ntb[key] = value[keep_idx]
+                    elif isinstance(value, list) and len(value) == int(N):
+                        ntb[key] = [value[i] for i in keep_idx_list]
+                except Exception:
+                    # not indexable, skip
+                    pass
+
+        # Metrics including chosen groups
         metrics = {
-            "rollout/in_group_std": in_group_std.mean(),
-            "rollout/in_group_max": in_group_max.mean(),
-            "rollout/in_group_mean": in_group_mean.mean(),
-            "rollout/chosen_in_group_std": in_group_std[top_groups].mean(),
-            "rollout/chosen_in_group_max": in_group_max[top_groups].mean(),
-            "rollout/chosen_in_group_mean": in_group_mean[top_groups].mean()
+            "rollout/in_group_std": float(jnp.mean(in_group_std)),
+            "rollout/in_group_max": float(jnp.mean(in_group_max)),
+            "rollout/in_group_mean": float(jnp.mean(in_group_mean)),
+            "rollout/chosen_in_group_std": float(jnp.mean(in_group_std[top_idx])),
+            "rollout/chosen_in_group_max": float(jnp.mean(in_group_max[top_idx])),
+            "rollout/chosen_in_group_mean": float(jnp.mean(in_group_mean[top_idx])),
         }
         return rollout_batch, metrics
 
@@ -483,11 +491,11 @@ class SyncMultiTurnRollout:
             env_outputs.append(rollout_state)
         return env_outputs
 
-    def build_ppo_batch(self, rollout_states: List[Dict]) -> DataProto:
+    def build_ppo_batch(self, rollout_states: List[Dict]):
         """
-        Build PPO batch from the final batch rollout states.
-        Converts collected rollout states to DataProto format for PPO training.
+        Build PPO batch from the final batch rollout states using numpy/JAX, no DataProto.
         """
+        
         llm_input_texts = []
         messages_list = []
         
@@ -523,26 +531,36 @@ class SyncMultiTurnRollout:
             
             llm_input_texts.append(prompt_text)
         
-        inputs = self.tokenizer(llm_input_texts, return_tensors="pt", padding=True, padding_side="left", truncation=False) # do not truncate here. Process later at TODO
-        input_ids, attention_mask = inputs.input_ids, inputs.attention_mask
-        position_ids = attention_mask.cumsum(dim=-1)
+        # Tokenize via tokenizer; many HF tokenizers return numpy if as numpy requested
+        inputs = self.tokenizer(
+            llm_input_texts,
+            return_tensors=None,
+            padding=True,
+            padding_side="left",
+            truncation=False,
+        )
+        # Harmonize to numpy arrays
+        input_ids = np.array(inputs["input_ids"]) if isinstance(inputs, dict) else np.array(inputs.input_ids)
+        attention_mask = np.array(inputs["attention_mask"]) if isinstance(inputs, dict) else np.array(inputs.attention_mask)
+        position_ids = attention_mask.cumsum(axis=-1)
         scores = [[i['reward'] for i in env_output['history']] for env_output in rollout_states]
         
-        loss_mask, score_tensor, response_mask = self.get_masks_and_scores(input_ids, scores, use_turn_scores=self.cfg.rollout.use_turn_scores)
+        # Convert to jnp for mask/score computation
+        loss_mask, score_tensor, response_mask = self.get_masks_and_scores(jnp.array(input_ids), scores, use_turn_scores=self.cfg.rollout.use_turn_scores)
         normalized_score_tensor = self._normalize_score_tensor(score_tensor, rollout_states)
-        response_length = response_mask.sum(dim=-1).float().mean().item()
+        response_length = float(np.mean(np.sum(np.array(response_mask), axis=-1)))
 
-        llm_inputs = DataProto()
-        llm_inputs.batch = TensorDict({
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "responses": input_ids[:, 1:], # remove the first token
-            'loss_mask': loss_mask,
-            'rm_scores': normalized_score_tensor,
-        }, batch_size=input_ids.shape[0])
+        # Return a plain dict batch compatible with filter_rollout
+        batch = {
+            "input_ids": jnp.array(input_ids),
+            "attention_mask": jnp.array(attention_mask),
+            "position_ids": jnp.array(position_ids),
+            "responses": jnp.array(input_ids[:, 1:]),
+            "loss_mask": loss_mask,
+            "rm_scores": normalized_score_tensor,
+        }
 
-        llm_inputs.non_tensor_batch = {
+        non_tensor_batch = {
             "env_ids": np.array([env_output["env_id"] for env_output in rollout_states], dtype=object),
             "group_ids": np.array([env_output["group_id"] for env_output in rollout_states], dtype=object),
             "messages_list": np.array(messages_list, dtype=object),
@@ -560,9 +578,7 @@ class SyncMultiTurnRollout:
             for key, value in metrics.items()
         }
         metrics["response_length"] = response_length
-        llm_inputs.meta_info = {"metrics": metrics}
-
-        return llm_inputs
+        return {"batch": batch, "non_tensor_batch": non_tensor_batch, "meta_info": {"metrics": metrics}}
 
     # ─────────────────── LIFECYCLE MANAGEMENT ───────────────────
 
@@ -601,7 +617,7 @@ class SyncMultiTurnRollout:
             initial_env_outs.append(initial_env_out)
         
         # Update tracking structures with batch of reset outputs
-        self.done_mask = torch.zeros(self.total_agent_num, dtype=torch.bool)
+        self.done_mask = jnp.zeros(self.total_agent_num, dtype=jnp.bool_)
         self.env_outs = initial_env_outs
         self.step_cnt = 0
         
