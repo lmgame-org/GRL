@@ -21,6 +21,8 @@ from tunix.rl import utils
 from tunix.rl.ppo import ppo_helpers
 from tunix.rl.queue import data_queue as queue_lib
 from tunix.sft import metrics_logger
+from grl.rollout.tunix_sync_multi_turn_rollout import SyncMultiTurnRollout
+import numpy as np
 
 # Re-exported wrappers inherit from Tunix PPO implementations
 from tunix.tunix.rl.ppo.ppo_learner import (
@@ -40,7 +42,7 @@ __all__ = [
     "PpoLearner",
 ]
 
-class PpoLearner(_BasePpoLearner):
+class MultiTurnPpoLearner(_BasePpoLearner):
   """Wrapper subclass of Tunix PPO PpoLearner.
 
   Override lifecycle hooks or training logic here progressively.
@@ -51,6 +53,10 @@ class PpoLearner(_BasePpoLearner):
     ppo_config: PpoConfig,
     reward_fns: RewardFn | List[RewardFn] | None = None,
     data_shuffle_seed: int | None = None,
+    *,
+    multi_turn_cfg=None,
+    multi_turn_processor=None,
+    multi_turn_validation: bool = False,
     ):
     super().__init__(
         rl_cluster=rl_cluster,
@@ -58,12 +64,23 @@ class PpoLearner(_BasePpoLearner):
         reward_fns=reward_fns,
         data_shuffle_seed=data_shuffle_seed,
     )
-    # ─────────────────── MODIFICATION: Multi-turn rollout manager (to be integrated) ───────────────────
-    # Placeholder: initialize self.multi_turn_rollout here when adopting multi-turn Tunix rollout
-    # Example:
-    #   from grl.rollout.tunix_sync_multi_turn_rollout import SyncMultiTurnRollout
-    #   self.multi_turn_rollout = SyncMultiTurnRollout(actor_rollout_wg=..., cfg=..., tokenizer=...)
-    # ─────────────────── END MODIFICATION ───────────────────
+
+    
+    # ─────────────────── Multi-turn rollout manager ───────────────────
+    # Initialize when config is provided; otherwise remain None (fallback to single-turn)
+    self.multi_turn_rollout = None
+    if multi_turn_cfg is not None:
+      # Use the RLCluster tokenizer; pass through cfg/processor from caller
+      self.multi_turn_rollout = SyncMultiTurnRollout(
+          rl_cluster=self.rl_cluster,
+          cfg=multi_turn_cfg,
+          tokenizer=self.rl_cluster.tokenizer,
+          processor=multi_turn_processor,
+          validation=multi_turn_validation,
+      )
+    # Storage for last built rollout batch to aid later conversion to TrainExample
+    self._last_rollout_batch = None
+    
   def _generate_and_compute_advantage(
       self,
       training_input: _TrainingInputT,
@@ -84,30 +101,82 @@ class PpoLearner(_BasePpoLearner):
     max_prompt_length = (
         self.rl_cluster.cluster_config.rollout_config.max_prompt_length
     )
-    # ─────────────────── MODIFICATION: Replace single-turn rl_cluster.generate with multi-turn rollout ───────────────────
-    # Current behavior: single-turn sampling using rl_cluster.generate(prompts=...)
-    # Planned change: use self.multi_turn_rollout.rollout() and build PPO batch from trajectories
-    # to produce prompt_ids, completion_ids, masks, scores, etc.
-    completion_output = self.rl_cluster.generate(
-        prompts=training_input["prompts"],
-    )
-    completion_ids = completion_output.tokens
-    prompt_ids = completion_output.left_padded_prompt_tokens
+    # ─────────────────── Multi-turn rollout (side-by-side) ───────────────────
+    # First, run multi-turn rollout and filtering so we can later convert to TrainExample.
+    if self.multi_turn_rollout is not None:
+      mt_batch = self.multi_turn_rollout.rollout()
+      mt_batch_filtered, mt_metrics = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
+      self._last_rollout_batch = mt_batch_filtered
+      # # Optional: basic logging for visibility
+      # try:
+      #   self._actor_metrics_logger.log(
+      #       "rollout/mt_batch_size", float(len(mt_batch_filtered.input_ids)), mode, self._get_metric_logging_steps(mode)
+      #   )
+      # except Exception:
+      #   pass
+
+    # ─────────────────── MODIFICATION: Full-conversation conversion (replace single-turn rl_cluster.generate) ───────────────────
+    # Convert the filtered multi-turn RolloutBatch into Tunix PPO tensors using full-conversation framing:
+    #   prompt_ids = input_ids[:, :-1] (left-padded to max_prompt_length)
+    #   completion_ids = input_ids[:, 1:]
+    #   completion_mask = loss_mask (already aligned to completion_ids)
+    #   completion_plus_one_mask constructed like Tunix for value alignment
+    def _convert_rollout_batch_to_tunix_format(batch):
+      inp = np.array(batch.input_ids)
+      loss_m = np.array(batch.loss_mask).astype(bool)  # [B, L-1]
+      B, L = inp.shape
+
+      # Full-conversation split
+      fc_prompt = inp[:, :-1]     # [B, L-1]
+      fc_completion = inp[:, 1:]  # [B, L-1]
+
+      # Left-pad prompt to max_prompt_length with pad_id
+      Pmax = int(self.rl_cluster.cluster_config.rollout_config.max_prompt_length)
+      pad_id = int(self.rl_cluster.rollout.pad_id())
+      if fc_prompt.shape[1] > Pmax:
+        prompt_padded = fc_prompt[:, -Pmax:]
+      else:
+        left_pad = Pmax - fc_prompt.shape[1]
+        prompt_padded = np.concatenate([
+          np.full((B, left_pad), pad_id, dtype=fc_prompt.dtype),
+          fc_prompt
+        ], axis=1)
+
+      prompt_ids_local = jnp.array(prompt_padded)
+      completion_ids_local = jnp.array(fc_completion)
+      completion_mask_local = jnp.array(loss_m)
+      prompt_mask_local = (prompt_ids_local != pad_value).astype("int32")
+
+      # EOS index and completion_plus_one_mask like Tunix
+      eos_idx_local = jnp.max(common.build_positions_from_mask(completion_mask_local), axis=-1)
+      is_padding_token_local = jnp.any(~completion_mask_local, axis=-1)
+      completion_plus_one_mask_local = completion_mask_local.at[
+          jnp.arange(B)[is_padding_token_local],
+          (eos_idx_local + 1)[is_padding_token_local],
+      ].set(True)
+
+      return (
+        prompt_ids_local,
+        completion_ids_local,
+        prompt_mask_local,
+        completion_mask_local,
+        eos_idx_local,
+        completion_plus_one_mask_local,
+      )
+
+    if self.multi_turn_rollout is None or self._last_rollout_batch is None:
+      raise RuntimeError("Multi-turn rollout is not initialized or has no batch; cannot perform full-conversation PPO.")
+
+    (
+      prompt_ids,
+      completion_ids,
+      prompt_mask,
+      completion_mask,
+      eos_idx,
+      completion_plus_one_mask,
+    ) = _convert_rollout_batch_to_tunix_format(self._last_rollout_batch)
 
     batch_size = completion_ids.shape[0]
-    prompt_mask = (prompt_ids != pad_value).astype("int32")
-    completion_mask = common.make_completion_mask(
-        completion_ids, eos_tok=eos_value
-    )
-    eos_idx = jnp.max(
-        common.build_positions_from_mask(completion_mask),
-        axis=-1,
-    )
-    is_padding_token = jnp.any(~completion_mask, axis=-1)
-    completion_plus_one_mask = completion_mask.at[
-        jnp.arange(batch_size)[is_padding_token],
-        (eos_idx + 1)[is_padding_token],
-    ].set(True)
     # ─────────────────── END MODIFICATION ───────────────────
 
     # ===== Compute log probs ======
@@ -179,11 +248,10 @@ class PpoLearner(_BasePpoLearner):
           eos_idx + max_prompt_length,
       ]
     else:
-      last_token_scores = self._compute_rewards(
-          prompts=training_input["prompts"],
-          completions=completion_output.text,
-          **{k: v for k, v in training_input.items() if k != "prompts"},
-      )
+      # ─────────────────── MODIFICATION: Use rollout batch rewards (final column) instead of text-based reward_fns ───────────────────
+      # Align with full-conversation rollout: reward_scores is [B, L-1], take the last column per sample.
+      last_token_scores = jnp.array(self._last_rollout_batch.reward_scores)[:, -1]
+      # ─────────────────── END MODIFICATION ───────────────────
 
     # This is how rewards are computed. This is in accordance with TRL and
     # with verl's `NaiveRewardManager`. This is a different from GRPO, where

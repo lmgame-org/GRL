@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from grl.agents import get_agent_cls, REGISTERED_AGENTS
+from grl.rollout.utils import RolloutBatch
 import jax.numpy as jnp
 import jax
 import numpy as np
@@ -137,7 +138,7 @@ class SyncMultiTurnRollout:
             done_groups += self.agent_group_num_list[i]
         
         # Initialize tracking structures - actual env_outs will be set in rollout()
-        self.done_mask = jnp.zeros(self.total_agent_num, dtype=jnp.bool_)
+        self.done_mask = np.zeros(self.total_agent_num, dtype=bool)
         self.env_outs = None  # Will be initialized in _reset_batch_agents()
 
     # ─────────────────── BATCH LLM PROMPTS ───────────────────
@@ -266,7 +267,7 @@ class SyncMultiTurnRollout:
         """
         self._reset_batch_agents()
         
-        for turn in range(self.max_turns):
+        for _ in range(self.max_turns):
             if self.done_mask.all():
                 break
 
@@ -282,7 +283,10 @@ class SyncMultiTurnRollout:
 
             
             self.step_cnt += 1
-        
+            
+        final_rollout_states = self._collect_final_rollout_states()
+        return self.build_rollout_batch(final_rollout_states)
+
 
     # ─────────────────── PPO BATCH BUILDING ───────────────────
 
@@ -389,7 +393,7 @@ class SyncMultiTurnRollout:
 
         return score_tensor
 
-    def filter_rollout(self, rollout_batch):
+    def filter_rollout_batch(self, rollout_batch: RolloutBatch) -> tuple[RolloutBatch, dict]:
         """
         Filter rollout batch using JAX, no DataProto or numpy.
 
@@ -407,7 +411,7 @@ class SyncMultiTurnRollout:
         num_groups, group_size = self.agent_group_num_list[0], self.agent_group_size_list[0]
 
         # Scores: [N, T] → per-sample scalar [N] → reshape to [G, S]
-        rm_scores = jnp.array(rollout_batch["rm_scores"])  # [N, T]
+        rm_scores = jnp.array(rollout_batch.reward_scores)  # [N, T]
         per_sample = jnp.sum(rm_scores, axis=-1)  # [N]
         group_scores = jnp.reshape(per_sample, (num_groups, group_size))  # [G, S]
 
@@ -446,25 +450,22 @@ class SyncMultiTurnRollout:
 
         # Filter tensor fields (leading dim N)
         N = per_sample.shape[0]
-        for key, arr in list(rollout_batch.items()):
-            if key == "non_tensor_batch":
-                continue
-            if isinstance(arr, jnp.ndarray) and arr.shape[:1] == (N,):
-                rollout_batch[key] = arr[keep_idx]
+        # Filter tensor-like fields inside the dataclass
+        input_ids = jnp.array(rollout_batch.input_ids)[keep_idx]
+        loss_mask = jnp.array(rollout_batch.loss_mask)[keep_idx]
+        reward_scores = jnp.array(rollout_batch.reward_scores)[keep_idx]
 
         # Filter non-tensor fields
-        if "non_tensor_batch" in rollout_batch and isinstance(rollout_batch["non_tensor_batch"], dict):
-            ntb = rollout_batch["non_tensor_batch"]
-            keep_idx_list = list(map(int, keep_idx.tolist()))
-            for key, value in list(ntb.items()):
-                try:
-                    if isinstance(value, jnp.ndarray) and value.shape[:1] == (N,):
-                        ntb[key] = value[keep_idx]
-                    elif isinstance(value, list) and len(value) == int(N):
-                        ntb[key] = [value[i] for i in keep_idx_list]
-                except Exception:
-                    # not indexable, skip
-                    pass
+        # Filter non-tensor agent_raw_data
+        keep_idx_list = list(map(int, keep_idx.tolist()))
+        agent_raw = {}
+        for key, value in rollout_batch.agent_raw_data.items():
+            if isinstance(value, np.ndarray) and value.shape[:1] == (N,):
+                agent_raw[key] = value[keep_idx_list]
+            elif isinstance(value, list) and len(value) == int(N):
+                agent_raw[key] = [value[i] for i in keep_idx_list]
+            else:
+                agent_raw[key] = value
 
         # Metrics including chosen groups
         metrics = {
@@ -475,7 +476,14 @@ class SyncMultiTurnRollout:
             "rollout/chosen_in_group_max": float(jnp.mean(in_group_max[top_idx])),
             "rollout/chosen_in_group_mean": float(jnp.mean(in_group_mean[top_idx])),
         }
-        return rollout_batch, metrics
+        filtered = RolloutBatch(
+            input_ids=np.array(input_ids),
+            loss_mask=np.array(loss_mask),
+            reward_scores=np.array(reward_scores),
+            agent_raw_data=agent_raw,
+            meta_info=rollout_batch.meta_info,
+        )
+        return filtered, metrics
 
     def _collect_final_rollout_states(self) -> List[Dict]:
         """
@@ -491,7 +499,7 @@ class SyncMultiTurnRollout:
             env_outputs.append(rollout_state)
         return env_outputs
 
-    def build_ppo_batch(self, rollout_states: List[Dict]):
+    def build_rollout_batch(self, rollout_states: List[Dict]) -> RolloutBatch:
         """
         Build PPO batch from the final batch rollout states using numpy/JAX, no DataProto.
         """
@@ -542,7 +550,7 @@ class SyncMultiTurnRollout:
         # Harmonize to numpy arrays
         input_ids = np.array(inputs["input_ids"]) if isinstance(inputs, dict) else np.array(inputs.input_ids)
         attention_mask = np.array(inputs["attention_mask"]) if isinstance(inputs, dict) else np.array(inputs.attention_mask)
-        position_ids = attention_mask.cumsum(axis=-1)
+        # position_ids = attention_mask.cumsum(axis=-1)
         scores = [[i['reward'] for i in env_output['history']] for env_output in rollout_states]
         
         # Convert to jnp for mask/score computation
@@ -550,17 +558,10 @@ class SyncMultiTurnRollout:
         normalized_score_tensor = self._normalize_score_tensor(score_tensor, rollout_states)
         response_length = float(np.mean(np.sum(np.array(response_mask), axis=-1)))
 
-        # Return a plain dict batch compatible with filter_rollout
-        batch = {
-            "input_ids": jnp.array(input_ids),
-            "attention_mask": jnp.array(attention_mask),
-            "position_ids": jnp.array(position_ids),
-            "responses": jnp.array(input_ids[:, 1:]),
-            "loss_mask": loss_mask,
-            "rm_scores": normalized_score_tensor,
-        }
+        # Compose numpy reward_scores
+        reward_scores_np = np.array(normalized_score_tensor)
 
-        non_tensor_batch = {
+        agent_raw_data = {
             "env_ids": np.array([env_output["env_id"] for env_output in rollout_states], dtype=object),
             "group_ids": np.array([env_output["group_id"] for env_output in rollout_states], dtype=object),
             "messages_list": np.array(messages_list, dtype=object),
@@ -578,7 +579,14 @@ class SyncMultiTurnRollout:
             for key, value in metrics.items()
         }
         metrics["response_length"] = response_length
-        return {"batch": batch, "non_tensor_batch": non_tensor_batch, "meta_info": {"metrics": metrics}}
+
+        return RolloutBatch(
+            input_ids=np.array(input_ids),
+            loss_mask=np.array(loss_mask).astype(np.int32),
+            reward_scores=reward_scores_np,
+            agent_raw_data=agent_raw_data,
+            meta_info={"metrics": metrics},
+        )
 
     # ─────────────────── LIFECYCLE MANAGEMENT ───────────────────
 
@@ -617,7 +625,7 @@ class SyncMultiTurnRollout:
             initial_env_outs.append(initial_env_out)
         
         # Update tracking structures with batch of reset outputs
-        self.done_mask = jnp.zeros(self.total_agent_num, dtype=jnp.bool_)
+        self.done_mask = np.zeros(self.total_agent_num, dtype=bool)
         self.env_outs = initial_env_outs
         self.step_cnt = 0
         
