@@ -256,7 +256,7 @@ class SyncMultiTurnRollout:
         Returns:
             RolloutOutput: The rollout output containing text/tokens for completions
         """
-        return self.rl_cluster.generate(llm_prompts)
+        return self.rl_cluster.generate(prompts=llm_prompts)
 
     # ─────────────────── MAIN ROLLOUT LOOP ───────────────────
     def rollout(self):

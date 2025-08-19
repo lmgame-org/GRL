@@ -337,16 +337,50 @@ class SyncMultiTurnRollout:
 
     def get_masks_and_scores(self, input_ids: torch.Tensor, all_scores: List[List[float]] | None = None, use_turn_scores: bool = False):
         """
-        Get loss mask that only learns between <|im_start|>assistant and <|im_end|>. Currently only supports qwen.
-        NOTE: This assumes that the input_ids starts with system and then user & assistant in alternative ways
-        
+        Get loss mask and per-step reward (score_tensor) for PPO on multi-turn chats.
+        Currently tailored for Qwen-style chat markers (<|im_start|>, <|im_end|>).
+
+        Assumptions:
+        - input_ids are full conversation tokens [system, user, assistant, ...]
+        - A new turn starts at <|im_start|>; assistant turns are odd-numbered (after system)
+        - Rewards can be per-turn (at each assistant <|im_end|>) or only final-step
+
         Args:
             input_ids: shape (bsz, seq_len)
-            all_scores: List of score lists for each agent
-            use_turn_scores: Whether to use turn-based scores
-            
+            all_scores: List of per-sample lists of turn scores; layout is per agent
+            use_turn_scores: Whether to place scores at each assistant turn end, or
+                             accumulate into a single final-step reward
+
         Returns:
             Tuple of (loss_mask, score_tensor, response_mask)
+            - loss_mask: [bsz, L-1] booleans selecting targets for next-token loss
+            - score_tensor: [bsz, L-1] floats with sparse rewards aligned to targets
+            - response_mask: [bsz, L] booleans for assistant spans (diagnostic)
+
+        Example (single sample, L=15):
+            Tokens (idx:tok):
+              0:<|im_start|>, 1:s1, 2:s2, 3:s3, 4:<|im_end|>,
+              5:<|im_start|>, 6:s4, 7:s5, 8:s6, 9:<|im_end|>,
+              10:<|im_start|>, 11:s7, 12:s8, 13:s9, 14:<|im_end|>
+
+            turn_starts at {0,5,10} → turn_indicators:
+              [1,1,1,1,1, 2,2,2,2,2, 3,3,3,3,3]
+
+            response_mask (assistant only; odd and >1):
+              [0,0,0,0,0, 0,0,0,0,0, 1,1,1,1,1]
+
+            loss_mask_full = (turn_indicators > 1):
+              [0,0,0,0,0, 1,1,1,1,1, 1,1,1,1,1]
+            loss_mask = loss_mask_full[:-1] (align to next-token targets → L-1=14):
+              [0,0,0,0,0, 1,1,1,1,1, 1,1,1,1]
+
+            score_tensor (shape [L-1]=14):
+            - use_turn_scores = False (accumulate total_r at final step):
+              [0,0,0,0,0, 0,0,0,0,0, 0,0,0,total_r]
+
+            - use_turn_scores = True (per assistant turn; here only the last turn exists):
+              place r_last at <|im_end|> (idx 14 in full), then drop first col →
+              [0,0,0,0,0, 0,0,0,0,0, 0,0,0,r_last]
         """
         special_token = self.tokenizer.encode("<|im_start|>")[0]
         turn_starts = torch.where(input_ids == special_token, 1, 0)
@@ -375,6 +409,17 @@ class SyncMultiTurnRollout:
         """
         Normalize the score tensor to be between 0 and 1.
         NOTE: only support score at the last token for now
+
+        Example (identity method):
+            Suppose score_tensor has shape [B, L-1] and only the last column is non-zero.
+            Let acc_scores = score_tensor[:, -1] = [2.5, 1.0, -0.5, 3.0]
+            Let per-sample penalty = [0.2, -0.1, 0.0, 0.5]
+
+            If method == "identity":
+              normalized_acc_scores = acc_scores
+              normalized_acc_scores += penalty → [2.7, 0.9, -0.5, 3.5]
+              score_tensor[:, -1] = normalized_acc_scores
+            All other time steps remain unchanged (typically zeros).
         """
         assert self.cfg.rollout.use_turn_scores == False, "Reward normalization is not supported for use_turn_scores == True"
         
