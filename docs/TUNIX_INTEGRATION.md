@@ -147,3 +147,6 @@ Target: Training entrypoint modeled after the GRPO demo and `train.py`, using Hy
 
 ========================================================================================================================
 Tunix Issue Records: 
+1. out of memory 
+2. critic model (one more linear layer)
+3. prompt id and completion ids: prompt_mask and completion_mask

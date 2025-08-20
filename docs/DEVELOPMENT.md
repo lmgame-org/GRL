@@ -48,6 +48,13 @@ Location: `trainer/agent_trainer.py`
     - [✅] verify the final results ids
   - [✅] integrate it with tunix_agent_trianer.py
   - [ ] test the training workflow in tunix_train.py
+    - [✅] draft a runnable tunix multi-turn rl training
+    - [ ] wrap up tunix training code 
+      - [ ] critic model building + critic tpu allocation
+      - [ ] reward score allocation
+      - [ ] prompt ids and completions ids from input ids (pattern analysis)
+    - [ ] wandb metric visualization
+    - [ ] validation implementation
 - [ ] Abstract the framework to integrate different trainers
 
 #### 2.6 Tooling & Build
