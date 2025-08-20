@@ -144,3 +144,6 @@ Target: Training entrypoint modeled after the GRPO demo and `train.py`, using Hy
 - Implement model/tokenizer load in `tunix_train.py` (Gemma + LoRA, sharded to mesh) following the demo.
 - Adapt `tunix_sync_multi_turn_rollout.py` batch builder to emit `TrainExample` compatible with Tunix PPO/GRPO.
 - Replace the generation call inside `tunix_agent_trainer.py` and test end‑to‑end with small configs.
+
+========================================================================================================================
+Tunix Issue Records: 

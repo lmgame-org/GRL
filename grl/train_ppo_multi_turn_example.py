@@ -60,24 +60,21 @@ import functools
 import gc
 import os
 from pprint import pprint
-import re
 import time
 
 from flax import nnx as _nnx  # avoid shadowing, though nnx already imported
-import grain
 import humanize
 import jax
 import jax.numpy as jnp
 # import kagglehub
 import optax
 from orbax import checkpoint as ocp
-import qwix
-import tensorflow_datasets as tfds
 from tqdm.auto import tqdm
-from tunix.generate import sampler as sampler_lib
 from tunix.rl import rl_cluster as rl_cluster_lib
 from tunix.rl.rollout import base_rollout
-from tunix.rl.ppo.ppo_learner import PpoConfig, PpoLearner
+from tunix.rl.ppo.ppo_learner import PpoConfig
+from grl.trainer.tunix_agent_trainer import MultiTurnPpoLearner
+from omegaconf import OmegaConf
 from tunix.sft import metrics_logger
 from pathlib import Path
 from jax_smi import initialise_tracking
@@ -85,9 +82,9 @@ initialise_tracking()
 
 
 # ============================== Cell 4 ==============================
-# ====== Data ======
-TRAIN_DATA_DIR = "./data/train"
-TEST_DATA_DIR = "./data/test"
+"""Multi-turn training uses rollout-generated data only; no external dataset."""
+TRAIN_DATA_DIR = None
+TEST_DATA_DIR = None
 TRAIN_FRACTION = 1.0
 
 # ====== LoRA ======
@@ -95,12 +92,13 @@ RANK = 64
 ALPHA = 64.0
 
 # ====== Sharding ======
+# Use single-device mesh to avoid device mismatch during bring-up/testing.
 MESH = [(1, 2), ("fsdp", "tp")]
 
 # ====== GRPO ======
 # === Generation during GRPO training ===
-MAX_PROMPT_LENGTH = 256
-TOTAL_GENERATION_STEPS = 768
+MAX_PROMPT_LENGTH = 4096
+TOTAL_GENERATION_STEPS = 400
 # Important to keep a high-ish temperature for varied, diverse responses during
 # training.
 TEMPERATURE = 0.9
@@ -120,7 +118,7 @@ CLIP_RANGE_VALUE = 0.2
 # ====== Training ======
 BATCH_SIZE = 1
 # Increase `NUM_BATCHES` and `MAX_STEPS` for better results.
-NUM_BATCHES = 3738
+NUM_BATCHES = 200
 # Keep `NUM_TEST_BATCHES` low so that evaluation runs quickly. It can be
 # increased to a max. of 330 (if batch size is 4).
 NUM_TEST_BATCHES = 100
@@ -175,84 +173,24 @@ def show_hbm_usage():
     limit = stats["bytes_limit"]
     print(f"Using {fmt_size(used)} / {fmt_size(limit)} ({used/limit:%}) on {d}")
 
-# ----- Data preprocessing -----
-
-reasoning_start = ""
-reasoning_end = ""
-solution_start = ""
-solution_end = ""
+"""No text templates or parsing needed for multi-turn Sokoban rollout."""
 
 
-SYSTEM_PROMPT = f"""You are given a problem. Think about the problem and \
-provide your reasoning. Place it between {reasoning_start} and \
-{reasoning_end}. Then, provide the final answer (i.e., just one numerical \
-value) between {solution_start} and {solution_end}."""
+def get_dataset(_: str | None, split: str = "train"):
+  # For multi-turn rollouts, return a lightweight empty iterator of fixed length
+  del _
+  del split
+  class _Empty:
+    def __iter__(self):
+      for _ in range(NUM_BATCHES):
+        yield {}
+    def __getitem__(self, idx):
+      return {}
+    def __len__(self):
+      return NUM_BATCHES
+  return _Empty()
 
-TEMPLATE = """user
-{system_prompt}
-
-{question}
-model"""
-
-def extract_hash_answer(text: str) -> str | None:
-  if "####" not in text:
-    return None
-  return text.split("####")[1].strip()
-
-
-def get_dataset(data_dir, split="train") -> grain.MapDataset:
-  # Download data
-  if not os.path.exists(data_dir):
-    os.makedirs(data_dir)
-
-  data = tfds.data_source(
-      "gsm8k",
-      split=split,
-      data_dir=data_dir,
-      builder_kwargs={"file_format": tfds.core.FileFormat.ARRAY_RECORD},
-      download=True,
-  )
-
-  dataset = (
-      grain.MapDataset.source(data)
-      .shuffle(seed=42)
-      .map(
-          lambda x: {
-              # passed to model forward pass
-              "prompts": TEMPLATE.format(
-                  system_prompt=SYSTEM_PROMPT,
-                  question=x["question"].decode("utf-8"),
-              ),
-              # passed to reward functions
-              "question": x["question"].decode("utf-8"),
-              # passed to reward functions
-              "answer": extract_hash_answer(x["answer"].decode("utf-8")),
-          }
-      )
-  )
-  return dataset
-
-dataset = get_dataset(TRAIN_DATA_DIR, "train").batch(BATCH_SIZE)[:NUM_BATCHES]
-
-if TRAIN_FRACTION == 1.0:
-  train_dataset = dataset.repeat(NUM_EPOCHS)
-  val_dataset = None
-else:
-  train_dataset = dataset[: int(len(dataset) * TRAIN_FRACTION)]
-  train_dataset = train_dataset.repeat(NUM_EPOCHS)
-
-  val_dataset = dataset[int(len(dataset) * TRAIN_FRACTION) :].repeat(NUM_EPOCHS)
-
-test_dataset = get_dataset(TEST_DATA_DIR, "test").batch(BATCH_SIZE)[
-    :NUM_TEST_BATCHES
-]
-
-len(train_dataset), len(val_dataset) if val_dataset is not None else 0, len(
-    test_dataset
-)
-
-for ele in train_dataset[:1]:
-  pprint(ele)
+dataset = get_dataset(TRAIN_DATA_DIR, "train")
 
 
 # ============================== Cell 6 ==============================
@@ -325,266 +263,43 @@ class Qwen2CriticWithScoreHead(nnx.Module):
     score = self.score(hidden)
     return score
 
-def _make_critic_from_reference(_model_config, _ref_model: nnx.Module) -> nnx.Module:
+def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
+  """Builds a critic from ref backbone and shards it to the provided mesh."""
+  # Create abstract Qwen2 graph and merge ref weights for the backbone
   abs_mod: nnx.Module = nnx.eval_shape(
       lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
   )
   graph_def, _ = nnx.split(abs_mod)
   ref_state = nnx.state(_ref_model)
   backbone = nnx.merge(graph_def, ref_state)
-  return Qwen2CriticWithScoreHead(backbone, rngs=nnx.Rngs(params=0))
+  critic = Qwen2CriticWithScoreHead(backbone, rngs=nnx.Rngs(params=0))
 
-critic_qwen2 = _make_critic_from_reference(model_config, qwen2_ref)
+  # Shard critic state consistently with the mesh
+  crit_graph_def, crit_state = nnx.split(critic)
+  crit_sharding = nnx.get_named_sharding(crit_state, _mesh)
+  crit_state = jax.tree.map(lambda x, s: jax.device_put(x, s), crit_state, crit_sharding)
+  return nnx.merge(crit_graph_def, crit_state)
+
+critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
 
 # ============================== Cell 8 ==============================
-# ----- Define reward functions -----
-match_format = re.compile(
-    rf"^[\s]{{0,}}"
-    rf"{reasoning_start}.+?{reasoning_end}.*?"
-    rf"{solution_start}(.+?){solution_end}"
-    rf"[\s]{{0,}}$",
-    flags=re.MULTILINE | re.DOTALL,
-)
+"""No external reward functions: rollout provides rewards.
 
-match_format.search(
-    f"{reasoning_start}Let me"
-    f" think!{reasoning_end}{solution_start}2{solution_end}",
-)
+However, Tunix's PPO requires either a reward model or at least one reward
+function to be provided at initialization. We provide a dummy reward function
+that returns zeros just to satisfy the initialization constraint. The actual
+rewards come from the multi-turn rollout in `MultiTurnPpoLearner`.
+"""
 
-def match_format_exactly(prompts, completions, **kargs):
-  scores = []
-  for completion in completions:
-    score = 0
-    response = completion
-    # Match if format is seen exactly!
-    if match_format.search(response) is not None:
-      score += 3.0
-    scores.append(score)
-  return scores
-
-
-def match_format_approximately(prompts, completions, **kargs):
-  scores = []
-
-  for completion in completions:
-    score = 0
-    response = completion
-    # Count how many keywords are seen - we penalize if too many!
-    # If we see 1, then plus some points!
-    score += 0.5 if response.count(reasoning_start) == 1 else -0.5
-    score += 0.5 if response.count(reasoning_end) == 1 else -0.5
-    score += 0.5 if response.count(solution_start) == 1 else -0.5
-    score += 0.5 if response.count(solution_end) == 1 else -0.5
-    scores.append(score)
-  return scores
-
-
-def check_answer(prompts, completions, answer, **kargs):
-  responses = completions
-
-  extracted_responses = [
-      guess.group(1) if (guess := match_format.search(r)) is not None else None
-      for r in responses
-  ]
-
-  scores = []
-  for guess, true_answer in zip(extracted_responses, answer):
-    score = 0
-    if guess is None:
-      scores.append(0)
-      continue
-    # Correct answer gets 3 points!
-    if guess == true_answer:
-      score += 3.0
-    # Match if spaces are seen
-    elif guess.strip() == true_answer.strip():
-      score += 1.5
-    else:
-      # We also reward it if the answer is close via ratios!
-      # Ie if the answer is within some range, reward it!
-      try:
-        ratio = float(guess) / float(true_answer)
-        if ratio >= 0.9 and ratio <= 1.1:
-          score += 0.5
-        elif ratio >= 0.8 and ratio <= 1.2:
-          score += 0.25
-        else:
-          score -= 1.0  # Penalize wrong answers
-      except:
-        score -= 0.5  # Penalize
-    scores.append(score)
-  return scores
-
-match_numbers = re.compile(
-    rf"{solution_start}.*?([\d\.]{{1,}})", flags=re.MULTILINE | re.DOTALL
-)
-match_numbers.findall(f"{solution_start}  0.34  {solution_end}")
-
-def check_numbers(prompts, completions, answer, **kargs):
-  question = kargs["question"]
-  responses = completions
-
-  extracted_responses = [
-      guess.group(1) if (guess := match_numbers.search(r)) is not None else None
-      for r in responses
-  ]
-
-  scores = []
-  print("START ============================")
-  print(f"Question: {question[0]}")
-  print(f"Answer: {answer[0]}")
-  print(f"Response: {responses[0]}")
-  print(f"Extracted: {extracted_responses[0]}")
-  print("END ==============================")
-  for guess, true_answer in zip(extracted_responses, answer):
-    if guess is None:
-      scores.append(0)
-      continue
-    # Convert to numbers
-    try:
-      true_answer = float(true_answer.strip())
-      guess = float(guess.strip())
-      scores.append(1.5 if guess == true_answer else 0.0)
-    except:
-      scores.append(0)
-      continue
-  return scores
+def _dummy_reward_fn(prompts, completions, **kwargs):
+  # Return zero reward per example; length must match batch size
+  batch_size = len(completions) if completions is not None else len(prompts)
+  return [0.0] * batch_size
 
 
 # ============================== Cell 9 ==============================
-# ----- Evaluate -----
-
-def generate(
-    question, sampler, temperature=0.7, top_k=50, top_p=0.95, seed=None
-):
-  """Given prompt, generates text."""
-
-  if isinstance(question, str):
-    input_batch = [
-        TEMPLATE.format(
-            system_prompt=SYSTEM_PROMPT,
-            question=question,
-        ),
-    ]
-  else:
-    input_batch = [
-        TEMPLATE.format(
-            system_prompt=SYSTEM_PROMPT,
-            question=q,
-        )
-        for q in question
-    ]
-
-  out_data = sampler(
-      input_strings=input_batch,
-      total_generation_steps=768,
-      temperature=temperature,
-      top_k=top_k,
-      top_p=top_p,
-      echo=False,
-      seed=seed if seed is not None else None,
-  )
-
-  output = out_data.text
-  if isinstance(question, str):
-    return output[0]
-  return output
-
-
-def evaluate(
-    dataset,
-    sampler,
-    temperature=0.7,
-    top_k=50,
-    top_p=0.95,
-    num_passes=1,
-    corr_lst=False,
-    make_lst=False,
-):
-  """Computes accuracy and percentage of outputs matching the format."""
-
-  response_lst = []
-  corr = 0
-  partially_corr = 0
-  corr_format = 0
-  total = 0
-
-  for batch in tqdm(dataset):
-    answers = batch["answer"]
-    questions = batch["question"]
-
-    multiple_call_responses = [[] for _ in range(len(questions))]
-    for p in range(num_passes):
-      responses = generate(
-          questions, sampler, temperature, top_k, top_p, seed=p
-      )
-      for idx, response in enumerate(responses):
-        multiple_call_responses[idx].append(response)
-
-    for question, multiple_call_response, answer in zip(
-        questions, multiple_call_responses, answers
-    ):
-      # check answer
-      corr_ctr_per_question = 0
-      partially_corr_per_question = 0
-      corr_format_per_question = 0
-      for response in multiple_call_response:
-        extracted_response = (
-            guess.group(1)
-            if (guess := match_numbers.search(response)) is not None
-            else "-1000000"
-        )
-        try:
-          if float(extracted_response.strip()) == float(answer.strip()):
-            corr_ctr_per_question += 1
-
-          ratio = float(extracted_response.strip()) / float(answer.strip())
-          if ratio >= 0.9 and ratio <= 1.1:
-            partially_corr_per_question += 1
-        except:
-          print("SKIPPED")
-
-        # check format
-        if match_format.search(response) is not None:
-          corr_format_per_question += 1
-
-        if (
-            corr_ctr_per_question > 0
-            and partially_corr_per_question > 0
-            and corr_format_per_question > 0
-        ):
-          break
-
-      if corr_ctr_per_question > 0:
-        corr += 1
-        if corr_lst and make_lst:
-          response_lst.append((question, answer, multiple_call_response))
-      else:
-        if not corr_lst and make_lst:
-          response_lst.append((question, answer, multiple_call_response))
-      if partially_corr_per_question > 0:
-        partially_corr += 1
-      if corr_format_per_question > 0:
-        corr_format += 1
-
-      total += 1
-      if total % 10 == 0:
-        print(
-            f"===> {corr=}, {total=}, {corr / total * 100=}, "
-            f"{partially_corr / total * 100=}, {corr_format / total * 100=}"
-        )
-
-  to_return = (
-      corr,
-      total,
-      corr / total * 100,
-      partially_corr / total * 100,
-      corr_format / total * 100,
-  )
-  if make_lst:
-    return to_return, response_lst
-  return to_return
+"""No evaluation for multi-turn rollout-only training."""
 
 
 # Use HF tokenizer already loaded earlier (AutoTokenizer.from_pretrained)
@@ -702,16 +417,24 @@ rl_cluster = rl_cluster_lib.RLCluster(
     cluster_config=cluster_config,
 )
 
-# PPO Trainer
-ppo_trainer = PpoLearner(
+# Load multi-turn rollout config from configs/base.yaml and configs/agents.yaml
+base_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/base.yaml")
+agents_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/agents.yaml")
+multi_turn_cfg = OmegaConf.merge(base_cfg, agents_cfg)
+# Override rollout grouping for quicker testing
+multi_turn_cfg.rollout.agent_group_num = [4]
+multi_turn_cfg.rollout.agent_group_size = [1]
+# Limit turns for faster iteration
+multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
+
+# Multi-turn PPO Trainer
+ppo_trainer = MultiTurnPpoLearner(
     rl_cluster=rl_cluster,
-    reward_fns=[
-        match_format_exactly,
-        match_format_approximately,
-        check_answer,
-        check_numbers,
-    ],
+    reward_fns=_dummy_reward_fn,
     ppo_config=ppo_config,
+    multi_turn_cfg=multi_turn_cfg,
+    multi_turn_processor=None,
+    multi_turn_validation=False,
 )
 
 with mesh:
@@ -719,44 +442,5 @@ with mesh:
 
 
 # ============================== Cell 11 ==============================
-# ----- Final Evaluation -----
-trained_ckpt_path = os.path.join(CKPT_DIR, str(MAX_STEPS), "model_params")
-
-abs_params = jax.tree.map(
-    lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype),
-    nnx.state(policy_qwen2, nnx.LoRAParam),
-)
-checkpointer = ocp.StandardCheckpointer()
-trained_lora_params = checkpointer.restore(trained_ckpt_path, target=abs_params)
-
-nnx.update(
-    policy_qwen2,
-    jax.tree.map(
-        lambda a, b: b,
-        nnx.state(policy_qwen2, nnx.LoRAParam),
-        trained_lora_params,
-    ),
-)
-
-sampler = sampler_lib.Sampler(
-    transformer=policy_qwen2,
-    tokenizer=qwen_tokenizer,
-    cache_config=sampler_lib.CacheConfig(
-        cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-        num_layers=model_config.num_layers,
-        num_kv_heads=model_config.num_kv_heads,
-        head_dim=model_config.head_dim,
-    ),
-)
-
-
-(corr, total, accuracy, partial_accuracy, format_accuracy) = evaluate(
-    test_dataset,
-    sampler,
-    **GENERATION_CONFIGS["greedy"],
-)
-print(
-    f"{corr=}, {total=}, {accuracy=}%, {partial_accuracy=}%,"
-    f" {format_accuracy=}%"
-)
+# No final evaluation for multi-turn rollout-only training
 

@@ -25,7 +25,7 @@ from grl.rollout.tunix_sync_multi_turn_rollout import SyncMultiTurnRollout
 import numpy as np
 
 # Re-exported wrappers inherit from Tunix PPO implementations
-from tunix.tunix.rl.ppo.ppo_learner import (
+from tunix.rl.ppo.ppo_learner import (
     TrainExample,  # re-export
     PpoConfig,     # re-export
     PpoLearner as _BasePpoLearner,
@@ -249,8 +249,17 @@ class MultiTurnPpoLearner(_BasePpoLearner):
       ]
     else:
       # ─────────────────── MODIFICATION: Use rollout batch rewards (final column) instead of text-based reward_fns ───────────────────
+      # Convert to JAX array and place on the same sharding as model inputs for correct device allocation.
+      reward_scores_jax = jnp.asarray(self._last_rollout_batch.reward_scores)
+      try:
+        # Match sharding with completion_ids when available (pjit/named sharding setups)
+        if hasattr(completion_ids, "sharding") and completion_ids.sharding is not None:
+          reward_scores_jax = jax.device_put(reward_scores_jax, completion_ids.sharding)
+      except Exception:
+        # Best-effort; fallback keeps it as a regular JAX array on default device
+        pass
       # Align with full-conversation rollout: reward_scores is [B, L-1], take the last column per sample.
-      last_token_scores = jnp.array(self._last_rollout_batch.reward_scores)[:, -1]
+      last_token_scores = reward_scores_jax[:, -1]
       # ─────────────────── END MODIFICATION ───────────────────
 
     # This is how rewards are computed. This is in accordance with TRL and
@@ -267,7 +276,16 @@ class MultiTurnPpoLearner(_BasePpoLearner):
       )
       rewards = rewards - self.ppo_config.beta * kl
 
-    rewards = rewards.at[jnp.arange(batch_size), eos_idx].add(last_token_scores)
+    # Ensure indices and updates are placed on the same sharding as `rewards` for scatter-add
+    batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
+    if hasattr(rewards, "sharding") and rewards.sharding is not None:
+      try:
+        batch_indices = jax.device_put(batch_indices, rewards.sharding)
+        eos_idx = jax.device_put(eos_idx, rewards.sharding)
+        last_token_scores = jax.device_put(last_token_scores, rewards.sharding)
+      except Exception:
+        pass
+    rewards = rewards.at[batch_indices, eos_idx].add(last_token_scores)
 
     # ===== Metric logging ======
     # TODO(abheesht): Verify metric logging. We should move these to losses,
