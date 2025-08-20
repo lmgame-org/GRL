@@ -142,3 +142,7 @@ setup_log.txt
 tmp/
 
 datasets/
+
+qwen_models/
+
+content/
