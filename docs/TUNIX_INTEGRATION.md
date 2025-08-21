@@ -147,6 +147,17 @@ Target: Training entrypoint modeled after the GRPO demo and `train.py`, using Hy
 
 ========================================================================================================================
 Tunix Issue Records: 
-1. out of memory 
-2. critic model (one more linear layer)
-3. prompt id and completion ids: prompt_mask and completion_mask
+A sample of training curve: https://wandb.ai/gamebench/tunix/runs/ucwaqwxo?nw=nwuseryuxuan_zhang13
+1. out of memory （why, why mesh (1,2))
+
+2. prompt id and completion ids: prompt_mask and completion_mask (pattern analysis)
+Trajectory: 
+0:<|im_start|>, 1:s1, 2:s2, 3:s3, 4:<|im_end|>, 5:<|im_start|>, 6:s4, 7:s5, 8:s6, 9:<|im_end|>, 10:<|im_start|>, 11:s7, 12:s8, 13:s9, 14:<|im_end|>
+input_ids: [0,1,2,3,4, 5,6,7,8,9, 10,11,12,13,14]
+loss_mask = [0,0,0,0,0, 1,1,1,1,1, 1,1,1,1]
+reward_scores:[0,0,0,0, 0,0,0,0,0, 0,0,0,0,total_r]]
+
+3. critic model (one more linear layer)
+
+4. validation problem
+

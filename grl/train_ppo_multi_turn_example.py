@@ -1,112 +1,69 @@
 """
-Script version of the Jupyter notebook (tunix_ppo_gsm8k_example.ipynb),
+Script version of the Jupyter notebook (tunix_ppo_multi_turn_example.ipynb),
 with cells preserved in order. Jupyter magics and shell commands are
 commented out for Python execution.
 """
 
-# ============================== Cell 0 ==============================
+# ======================= Imports =======================
+# Model definitions and parameter loading (Tunix/Qwen2)
 from tunix.models.qwen2 import params
 from tunix.models.qwen2 import model
-from flax import nnx
-from huggingface_hub import snapshot_download
-from etils import epath
 
-MODEL_CP_PATH = "/home/vanitas/lmgame_projects/GRL/qwen_models"
-repo_id = "Qwen/Qwen2.5-0.5B-Instruct"
-
-# Download safetensors locally (to MODEL_CP_PATH)
-downloaded_path = snapshot_download(
-    repo_id=repo_id,
-    local_dir=MODEL_CP_PATH,
-    allow_patterns=["*.safetensors", "*.json"],
-)
-print("Files downloaded to:", downloaded_path)
-
-# Prefer the actual directory where files landed
-model_dir = str(downloaded_path)
-
-config = model.ModelConfig.qwen2_5_0_5_b()
-# Only attempt load if .safetensors exist
-if list(epath.Path(model_dir).expanduser().glob("*.safetensors")):
-  qwen2 = params.create_model_from_safe_tensors(model_dir, config)
-else:
-  raise ValueError(f"No safetensors found in {model_dir}")
-# nnx.display(qwen2)
-
-
-# ============================== Cell 1 ==============================
-from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen3ForCausalLM
-
-tokenizer = AutoTokenizer.from_pretrained(MODEL_CP_PATH)
-
-
-# ============================== Cell 2 ==============================
-# The following were Jupyter shell/magic commands; commented for script use.
-# !pip install -q tensorflow
-# !pip install -q tensorboardX
-# !pip install -q grain
-# !pip install -q git+https://github.com/google/tunix
-# !pip install -q git+https://github.com/google/qwix
-
-# !pip uninstall -q -y flax
-# !pip install -q git+https://github.com/google/flax.git
-
-# !pip install -q datasets
-# !pip install -q tensorflow_datasets
-
-
-# ============================== Cell 3 ==============================
-import functools
-import gc
-import os
-from pprint import pprint
-import time
-
-from flax import nnx as _nnx  # avoid shadowing, though nnx already imported
-import humanize
+# JAX/Flax core
 import jax
 import jax.numpy as jnp
-# import kagglehub
-import optax
+from flax import nnx
 from orbax import checkpoint as ocp
-from tqdm.auto import tqdm
+
+# Optimizer/scheduler
+import optax
+
+# RL cluster and PPO trainer wrappers
 from tunix.rl import rl_cluster as rl_cluster_lib
 from tunix.rl.rollout import base_rollout
 from tunix.rl.ppo.ppo_learner import PpoConfig
 from grl.trainer.tunix_agent_trainer import MultiTurnPpoLearner
+
+# Config and metrics
 from omegaconf import OmegaConf
 from tunix.sft import metrics_logger
+
+# Hugging Face IO and paths
+from huggingface_hub import snapshot_download
+from etils import epath
+from transformers import AutoTokenizer
+
+# Utilities and env
+import gc
+import os
+import time
 from pathlib import Path
 from jax_smi import initialise_tracking
+
 initialise_tracking()
 
+# ======================= Configuration =======================
 
-# ============================== Cell 4 ==============================
-"""Multi-turn training uses rollout-generated data only; no external dataset."""
+# --- Model artifacts / data ---
+MODEL_CP_PATH = "/home/vanitas/lmgame_projects/GRL/qwen_models"
+repo_id = "Qwen/Qwen2.5-0.5B-Instruct"
 TRAIN_DATA_DIR = None
 TEST_DATA_DIR = None
 TRAIN_FRACTION = 1.0
 
-# ====== LoRA ======
-RANK = 64
-ALPHA = 64.0
+# --- Agent configuration (OmegaConf) ---
+# Load multi-turn rollout config from configs/base.yaml and configs/agents.yaml
+base_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/base.yaml")
+agents_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/agents.yaml")
+multi_turn_cfg = OmegaConf.merge(base_cfg, agents_cfg)
+# Override rollout grouping for quicker testing
+multi_turn_cfg.rollout.agent_group_num = [4]
+multi_turn_cfg.rollout.agent_group_size = [1]
+# Limit turns for faster iteration
+multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
 
-# ====== Sharding ======
-# Use single-device mesh to avoid device mismatch during bring-up/testing.
-MESH = [(1, 2), ("fsdp", "tp")]
-
-# ====== GRPO ======
-# === Generation during GRPO training ===
-MAX_PROMPT_LENGTH = 4096
-TOTAL_GENERATION_STEPS = 400
-# Important to keep a high-ish temperature for varied, diverse responses during
-# training.
-TEMPERATURE = 0.9
-TOP_P = 1.0
-TOP_K = 50
-
-# ====== PPO ======
-# PPO hyperparameters (defaults from tunix.tunix.rl.ppo.ppo_learner.PpoConfig)
+# --- PPO configuration ---
+# PPO hyperparameters used by Tunix PPO
 NUM_PPO_EPOCHS = 4
 MINI_BATCH_SIZE = 1
 GAMMA = 1.0
@@ -115,67 +72,52 @@ BETA = 0.04
 EPSILON = 0.2
 VF_COEF = 0.1
 CLIP_RANGE_VALUE = 0.2
-# ====== Training ======
+
+# --- Cluster / trainer / rollout configuration ---
+# Sharding (fsdp, tp) — adjust to available devices
+MESH = [(1, 2), ("fsdp", "tp")]
+
+# Rollout (GRPO generation) parameters
+MAX_PROMPT_LENGTH = 4096
+TOTAL_GENERATION_STEPS = 400
+TEMPERATURE = 0.9
+TOP_P = 1.0
+TOP_K = 50
+
+# Training loop setup
 BATCH_SIZE = 1
-# Increase `NUM_BATCHES` and `MAX_STEPS` for better results.
 NUM_BATCHES = 200
-# Keep `NUM_TEST_BATCHES` low so that evaluation runs quickly. It can be
-# increased to a max. of 330 (if batch size is 4).
-NUM_TEST_BATCHES = 100
+NUM_TEST_BATCHES = 100  # not used in this script but kept for completeness
+EVAL_EVERY_N_STEPS = 10
+NUM_EPOCHS = 1
+MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
 
-EVAL_EVERY_N_STEPS = 10  # this doesn't matter if `TRAIN_FRACTION = 1.0`.
-NUM_EPOCHS = 1  # can potentially train for more epochs
-
-# Number of training steps.
-MAX_STEPS = int(NUM_BATCHES  * TRAIN_FRACTION * NUM_EPOCHS)
-
-# === AdamW, warmup, cosine scheduler ===
+# Optimizer/scheduler
 LEARNING_RATE = 3e-6
 B1 = 0.9
 B2 = 0.99
 WEIGHT_DECAY = 0.1
-# == Cosine decay with warmup scheduler ==
-# Linearly increase learning rate from 0. to 5e-6 in the first 10% training
-# steps, and then gradually decrease the learning rate to 0 using cosine
-# scheduler.
 WARMUP_STEPS = 0.1 * MAX_STEPS
-# == Grad clipping ==
-# Grad clipping to prevent large gradients. Found this
-# important to keep KL divergence in check.
 MAX_GRAD_NORM = 0.1
 
-# Checkpoint saving
+# Checkpointing
 INTERMEDIATE_CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/intermediate_ckpt/"
 CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/ckpts/"
 SAVE_INTERVAL_STEPS = 500
 MAX_TO_KEEP = 4
 
-# ====== Inference ======
+# Inference presets (optional)
 GENERATION_CONFIGS = {
-    # greedy search
     "greedy": {"temperature": 1e-4, "top_k": 1, "top_p": 1.0},
-    # some randomness
     "standard": {"temperature": 0.7, "top_k": 50, "top_p": 0.95},
-    # liberal
     "liberal": {"temperature": 0.85, "top_k": 2000, "top_p": 1.0},
 }
 
 
-# ============================== Cell 5 ==============================
-# ----- Utility functions -----
-def show_hbm_usage():
-  """Displays memory usage per device."""
-  fmt_size = functools.partial(humanize.naturalsize, binary=True)
-
-  for d in jax.local_devices():
-    stats = d.memory_stats()
-    used = stats["bytes_in_use"]
-    limit = stats["bytes_limit"]
-    print(f"Using {fmt_size(used)} / {fmt_size(limit)} ({used/limit:%}) on {d}")
-
-"""No text templates or parsing needed for multi-turn Sokoban rollout."""
+# ======================= Prepare dummy reward and datasets =======================
 
 
+# ----- Get dataset -----
 def get_dataset(_: str | None, split: str = "train"):
   # For multi-turn rollouts, return a lightweight empty iterator of fixed length
   del _
@@ -192,22 +134,47 @@ def get_dataset(_: str | None, split: str = "train"):
 
 dataset = get_dataset(TRAIN_DATA_DIR, "train")
 
-
-# ============================== Cell 6 ==============================
-checkpointer = ocp.StandardCheckpointer()
-_, state = nnx.split(qwen2)
-checkpoint_path = os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state")
-if not os.path.exists(checkpoint_path):
-  checkpointer.save(os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state"), state)
-time.sleep(60)
-del qwen2
-del state
-gc.collect()
+# ----- Get dummy reward function -----
+def _dummy_reward_fn(prompts, completions, **kwargs):
+  # Return zero reward per example; length must match batch size
+  batch_size = len(completions) if completions is not None else len(prompts)
+  return [0.0] * batch_size
 
 
-# ============================== Cell 7 ==============================
-# ----- load models -----
-def get_ref_model(ckpt_path):
+
+# ======================= Prepare Policy Models & Critic Models =======================
+
+def download_model_weights(repo_id: str, local_dir: str) -> str:
+  """Download model weights to local_dir and return the resolved path."""
+  downloaded = snapshot_download(
+      repo_id=repo_id,
+      local_dir=local_dir,
+      allow_patterns=["*.safetensors", "*.json"],
+  )
+  print("Files downloaded to:", downloaded)
+  return str(downloaded)
+
+
+def load_qwen2_from_safetensors(model_dir: str, model_config) -> nnx.Module:
+  """Load Qwen2 from local safetensors directory."""
+  if list(epath.Path(model_dir).expanduser().glob("*.safetensors")):
+    return params.create_model_from_safe_tensors(model_dir, model_config)
+  raise ValueError(f"No safetensors found in {model_dir}")
+
+
+def save_intermediate_state(module: nnx.Module, save_dir: str) -> None:
+  """Save an intermediate nnx state checkpoint once if it doesn't exist."""
+  checkpointer = ocp.StandardCheckpointer()
+  _, state = nnx.split(module)
+  checkpoint_path = os.path.join(Path(save_dir), "state")
+  if not os.path.exists(checkpoint_path):
+    checkpointer.save(checkpoint_path, state)
+    # Ensure filesystem settles before continuing (matches original behavior)
+    time.sleep(60)
+
+
+def build_reference_model_from_ckpt(ckpt_path: str):
+  """Restore reference model and return (model, mesh, model_config)."""
   mesh = jax.make_mesh(*MESH)
   model_config = model.ModelConfig.qwen2_5_0_5_b()
   abs_qwen2: nnx.Module = nnx.eval_shape(
@@ -227,18 +194,28 @@ def get_ref_model(ckpt_path):
   return qwen2_ref, mesh, model_config
 
 
+# 1) Download weights and load base model, then save an intermediate state
+model_config = model.ModelConfig.qwen2_5_0_5_b()
+model_dir = download_model_weights(repo_id, MODEL_CP_PATH)
+qwen2 = load_qwen2_from_safetensors(model_dir, model_config)
+save_intermediate_state(qwen2, INTERMEDIATE_CKPT_DIR)
+del qwen2
+gc.collect()
 
-# Reference model
-qwen2_ref, mesh, model_config = get_ref_model(
-    ckpt_path=os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state")
+# 2) Build reference/policy and critic models
+qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
+    os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state")
 )
-# nnx.display(qwen2_ref)
-
-
-
-# Policy model (use original, no LoRA)
 policy_qwen2 = qwen2_ref
-# nnx.display(policy_qwen2)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_CP_PATH)
+
+
+"""
+At this point, we have:
+- policy_qwen2: the policy/reference model (same weights initially)
+- mesh: named device mesh for sharding
+- tokenizer: loaded from local MODEL_CP_PATH
+"""
 
 
 # Critic model (required for PPO): initialize as a fresh Qwen2 and load
@@ -283,53 +260,9 @@ def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module
 critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
 
-# ============================== Cell 8 ==============================
-"""No external reward functions: rollout provides rewards.
-
-However, Tunix's PPO requires either a reward model or at least one reward
-function to be provided at initialization. We provide a dummy reward function
-that returns zeros just to satisfy the initialization constraint. The actual
-rewards come from the multi-turn rollout in `MultiTurnPpoLearner`.
-"""
-
-def _dummy_reward_fn(prompts, completions, **kwargs):
-  # Return zero reward per example; length must match batch size
-  batch_size = len(completions) if completions is not None else len(prompts)
-  return [0.0] * batch_size
-
-
-# ============================== Cell 9 ==============================
-"""No evaluation for multi-turn rollout-only training."""
-
-
-# Use HF tokenizer already loaded earlier (AutoTokenizer.from_pretrained)
-# and the original Qwen2 policy model (no LoRA)
+# ============================== initialize optimizer, rl_cluster, ppo_trainer =======================
 qwen_tokenizer = tokenizer
-# rollout_sampler = sampler_lib.Sampler(
-#     transformer=policy_qwen2,
-#     tokenizer=qwen_tokenizer,
-#     cache_config=sampler_lib.CacheConfig(
-#         cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-#         num_layers=model_config.num_layers,
-#         num_kv_heads=model_config.num_kv_heads,
-#         head_dim=model_config.head_dim,
-#     ),
-# )
 
-
-# (corr, total, accuracy, partial_accuracy, format_accuracy) = evaluate(
-#     test_dataset,
-#     rollout_sampler,
-#     **GENERATION_CONFIGS["greedy"],
-# )
-# print(
-#     f"{corr=}, {total=}, {accuracy=}%, {partial_accuracy=}%,"
-#     f" {format_accuracy=}%"
-# )
-
-
-# ============================== Cell 10 ==============================
-# ----- Training -----
 
 # Ckpt saving
 checkpointing_options = ocp.CheckpointManagerOptions(
@@ -340,11 +273,6 @@ checkpointing_options = ocp.CheckpointManagerOptions(
 metrics_logging_options = metrics_logger.MetricsLoggerOptions(
     log_dir="/home/vanitas/lmgame_projects/GRL/content/tmp/tensorboard/ppo", flush_every_n_steps=20
 )
-
-
-# Logs (Jupyter tensorboard magics commented out)
-# %load_ext tensorboard
-# %tensorboard --logdir /home/vanitas/lmgame_projects/GRL/content/tmp/tensorboard/ppo --port=0
 
 # Optimizer, learning rate scheduler, gradient clipping
 optimizer = optax.adamw(
@@ -364,6 +292,7 @@ if MAX_GRAD_NORM is not None:
       optax.clip_by_global_norm(max_norm=MAX_GRAD_NORM),
       optimizer,
   )
+
 
 # Training config
 cluster_config = rl_cluster_lib.ClusterConfig(
@@ -407,7 +336,6 @@ ppo_config = PpoConfig(
     vf_coef=VF_COEF,
     clip_range_value=CLIP_RANGE_VALUE,
 )
-
 # RL cluster
 rl_cluster = rl_cluster_lib.RLCluster(
     actor=policy_qwen2,
@@ -416,17 +344,6 @@ rl_cluster = rl_cluster_lib.RLCluster(
     tokenizer=qwen_tokenizer,
     cluster_config=cluster_config,
 )
-
-# Load multi-turn rollout config from configs/base.yaml and configs/agents.yaml
-base_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/base.yaml")
-agents_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/agents.yaml")
-multi_turn_cfg = OmegaConf.merge(base_cfg, agents_cfg)
-# Override rollout grouping for quicker testing
-multi_turn_cfg.rollout.agent_group_num = [4]
-multi_turn_cfg.rollout.agent_group_size = [1]
-# Limit turns for faster iteration
-multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
-
 # Multi-turn PPO Trainer
 ppo_trainer = MultiTurnPpoLearner(
     rl_cluster=rl_cluster,
@@ -440,7 +357,4 @@ ppo_trainer = MultiTurnPpoLearner(
 with mesh:
     ppo_trainer.train(dataset)
 
-
-# ============================== Cell 11 ==============================
-# No final evaluation for multi-turn rollout-only training
 

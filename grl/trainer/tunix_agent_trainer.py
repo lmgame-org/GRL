@@ -28,7 +28,7 @@ import numpy as np
 from tunix.rl.ppo.ppo_learner import (
     TrainExample,  # re-export
     PpoConfig,     # re-export
-    PpoLearner as _BasePpoLearner,
+    PpoLearner,
 )
 
 _TrainingInputT = Dict[str, List[str] | ArrayLike]
@@ -42,7 +42,7 @@ __all__ = [
     "PpoLearner",
 ]
 
-class MultiTurnPpoLearner(_BasePpoLearner):
+class MultiTurnPpoLearner(PpoLearner):
   """Wrapper subclass of Tunix PPO PpoLearner.
 
   Override lifecycle hooks or training logic here progressively.
@@ -107,13 +107,13 @@ class MultiTurnPpoLearner(_BasePpoLearner):
       mt_batch = self.multi_turn_rollout.rollout()
       mt_batch_filtered, mt_metrics = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
       self._last_rollout_batch = mt_batch_filtered
-      # # Optional: basic logging for visibility
-      # try:
-      #   self._actor_metrics_logger.log(
-      #       "rollout/mt_batch_size", float(len(mt_batch_filtered.input_ids)), mode, self._get_metric_logging_steps(mode)
-      #   )
-      # except Exception:
-      #   pass
+      # Log metrics from filter and meta info without try/except
+      step_local = self._get_metric_logging_steps(mode)
+      for name, value in mt_metrics.items():
+        self._actor_metrics_logger.log(name, float(value), mode, step_local)
+      meta_metrics = mt_batch_filtered.meta_info.get("metrics", {})
+      for name, value in meta_metrics.items():
+        self._actor_metrics_logger.log(name, float(value), mode, step_local)
 
     # ─────────────────── MODIFICATION: Full-conversation conversion (replace single-turn rl_cluster.generate) ───────────────────
     # Convert the filtered multi-turn RolloutBatch into Tunix PPO tensors using full-conversation framing:
