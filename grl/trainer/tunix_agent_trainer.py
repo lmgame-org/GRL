@@ -101,19 +101,25 @@ class MultiTurnPpoLearner(PpoLearner):
     max_prompt_length = (
         self.rl_cluster.cluster_config.rollout_config.max_prompt_length
     )
+    # ─────────────────── MODIFICATION: Bind a single step for all logs in this iteration ───────────────────
+    step = self._get_metric_logging_steps(mode)
+    # ─────────────────── END MODIFICATION ───────────────────
     # ─────────────────── Multi-turn rollout (side-by-side) ───────────────────
     # First, run multi-turn rollout and filtering so we can later convert to TrainExample.
     if self.multi_turn_rollout is not None:
       mt_batch = self.multi_turn_rollout.rollout()
       mt_batch_filtered, mt_metrics = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
       self._last_rollout_batch = mt_batch_filtered
+      # ─────────────────── MODIFICATION: use bound step for logging and reset multi-turn rollout to release memory ───────────────────
       # Log metrics from filter and meta info without try/except
-      step_local = self._get_metric_logging_steps(mode)
       for name, value in mt_metrics.items():
-        self._actor_metrics_logger.log(name, float(value), mode, step_local)
+        self._actor_metrics_logger.log(name, float(value), mode, step)
       meta_metrics = mt_batch_filtered.meta_info.get("metrics", {})
       for name, value in meta_metrics.items():
-        self._actor_metrics_logger.log(name, float(value), mode, step_local)
+        self._actor_metrics_logger.log(name, float(value), mode, step)
+      # Reset multi-turn rollout to release memory between iterations
+      self.multi_turn_rollout.reset()
+      # ─────────────────── END MODIFICATION ───────────────────
 
     # ─────────────────── MODIFICATION: Full-conversation conversion (replace single-turn rl_cluster.generate) ───────────────────
     # Convert the filtered multi-turn RolloutBatch into Tunix PPO tensors using full-conversation framing:
@@ -269,7 +275,14 @@ class MultiTurnPpoLearner(PpoLearner):
     # 2. Subtract KL divergence from the reward tensor of all 0s.
     # 3. A positive reward is given only at the final timestep, so we add that
     # to the reward tensor from (2).
-    rewards = jnp.zeros_like(completion_ids)
+    # ─────────────────── MODIFICATION: Ensure rewards are float and match sharding ───────────────────
+    rewards = jnp.zeros(completion_ids.shape, dtype=values.dtype)
+    try:
+      if hasattr(values, "sharding") and values.sharding is not None:
+        rewards = jax.device_put(rewards, values.sharding)
+    except Exception:
+      pass
+    # ─────────────────── END MODIFICATION ───────────────────
     if self.ppo_config.beta != 0.0:
       kl = common.compute_kl_divergence(
           old_per_token_logps, ref_per_token_logps
@@ -282,15 +295,19 @@ class MultiTurnPpoLearner(PpoLearner):
       try:
         batch_indices = jax.device_put(batch_indices, rewards.sharding)
         eos_idx = jax.device_put(eos_idx, rewards.sharding)
-        last_token_scores = jax.device_put(last_token_scores, rewards.sharding)
+        # ─────────────────── MODIFICATION: Cast rewards update to match dtype/sharding ───────────────────
+        last_token_scores = jax.device_put(last_token_scores.astype(rewards.dtype), rewards.sharding)
+        # ─────────────────── END MODIFICATION ───────────────────
       except Exception:
         pass
-    rewards = rewards.at[batch_indices, eos_idx].add(last_token_scores)
+    rewards = rewards.at[batch_indices, eos_idx].add(last_token_scores.astype(rewards.dtype))
 
     # ===== Metric logging ======
     # TODO(abheesht): Verify metric logging. We should move these to losses,
     # because the rollout batch can be split into mini-batches.
-    step = self._get_metric_logging_steps(mode)
+    # ─────────────────── MODIFICATION: use bound step (already computed above) ───────────────────
+    # step is bound at the start of the function
+    # ─────────────────── END MODIFICATION ───────────────────
 
     # Log raw scores from the reward model/fn
     self._actor_metrics_logger.log(
@@ -329,19 +346,19 @@ class MultiTurnPpoLearner(PpoLearner):
         "completions/mean_length",
         agg_completion_mask.mean(),
         mode,
-        self._get_metric_logging_steps(mode),
+        step,
     )
     self._actor_metrics_logger.log(
         "completions/max_length",
         agg_completion_mask.max(),
         mode,
-        self._get_metric_logging_steps(mode),
+        step,
     )
     self._actor_metrics_logger.log(
         "completions/min_length",
         agg_completion_mask.min(),
         mode,
-        self._get_metric_logging_steps(mode),
+        step,
     )
 
     # ===== Compute advantages using Generalised Advantage Estimation ======

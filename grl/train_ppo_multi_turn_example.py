@@ -58,17 +58,17 @@ agents_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/agents.ya
 multi_turn_cfg = OmegaConf.merge(base_cfg, agents_cfg)
 # Override rollout grouping for quicker testing
 multi_turn_cfg.rollout.agent_group_num = [4]
-multi_turn_cfg.rollout.agent_group_size = [1]
+multi_turn_cfg.rollout.agent_group_size = [8]
 # Limit turns for faster iteration
-multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
+# multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
 
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO
-NUM_PPO_EPOCHS = 4
+NUM_PPO_EPOCHS = 1
 MINI_BATCH_SIZE = 1
 GAMMA = 1.0
 GAE_LAMBDA = 0.95
-BETA = 0.04
+BETA = 0.0  # Disable KL to reduce memory
 EPSILON = 0.2
 VF_COEF = 0.1
 CLIP_RANGE_VALUE = 0.2
@@ -78,8 +78,8 @@ CLIP_RANGE_VALUE = 0.2
 MESH = [(1, 2), ("fsdp", "tp")]
 
 # Rollout (GRPO generation) parameters
-MAX_PROMPT_LENGTH = 4096
-TOTAL_GENERATION_STEPS = 400
+MAX_PROMPT_LENGTH = 2048
+TOTAL_GENERATION_STEPS =  256
 TEMPERATURE = 0.9
 TOP_P = 1.0
 TOP_K = 50
