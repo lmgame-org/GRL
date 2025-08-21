@@ -1,6 +1,8 @@
 Tunix Integration Updates (08/21): 
 A sample of training curve: https://wandb.ai/gamebench/tunix/runs/ucwaqwxo?nw=nwuseryuxuan_zhang13
-1. out of memory （why, why mesh (1,2))
+1. out of memory error
+the number of heads of qwen 2.5 0.5b is 14, mesh (1, 4), tensor parallelism can't split the weight
+tpu memory is not enough with a large prompt length and generation steps from sokoban env interactions
 
 2. Tunix prompt_id, prompt_mask, completion_ids, and completion_mask conversion
 ================================= Rollout Trajectory =================================
@@ -23,7 +25,9 @@ Shapes: Rollout batch → input_ids [B, L], loss_mask [B, L-1], reward_scores [B
 
 
 3. critic model (one more linear layer)
+I maually added a linear layer to support final value prediction. 
 
 4. validation problem
-other_environment_evaluation
+eval_per_step implementation details are unclear for me 
+how can we support different environment evaluation? 
 

@@ -51,9 +51,9 @@ Location: `trainer/agent_trainer.py`
     - [✅] draft a runnable tunix multi-turn rl training
     - [✅] wandb metric visualization
     - [ ] wrap up tunix training code 
-      - [ ] critic model building + critic tpu allocation
-      - [ ] reward score allocation
-      - [ ] prompt ids and completions ids from input ids (pattern analysis)
+      - [✅] critic model building + critic tpu allocation
+      - [✅] reward score allocation
+      - [✅] prompt ids and completions ids from input ids (pattern analysis)
       - [ ] abstract a uniform yaml config file
     - [ ] validation implementation
 - [ ] Abstract the framework to integrate different trainers
