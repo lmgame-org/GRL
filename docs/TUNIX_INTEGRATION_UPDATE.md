@@ -31,3 +31,5 @@ I maually added a linear layer to support final value prediction.
 eval_per_step implementation details are unclear for me 
 how can we support different environment evaluation? 
 
+
+![tunix_train_sample](assets/tunix_train_sample.png)
