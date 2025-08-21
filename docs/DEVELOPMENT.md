@@ -54,8 +54,11 @@ Location: `trainer/agent_trainer.py`
       - [✅] critic model building + critic tpu allocation
       - [✅] reward score allocation
       - [✅] prompt ids and completions ids from input ids (pattern analysis)
+      - [ ] cpu_offload; fsdp + tp to reduce memory
+      - [ ] calculate memory consumption
       - [ ] abstract a uniform yaml config file
     - [ ] validation implementation
+    - [ ] align with hyperparameters
 - [ ] Abstract the framework to integrate different trainers
 
 #### 2.6 Tooling & Build
