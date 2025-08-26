@@ -4,19 +4,19 @@
 # Configurable script with key training parameters
 
 # ------ Configurable Parameters ------
-CUDA_VISIBLE_DEVICES=${1:-"0"}
+CUDA_VISIBLE_DEVICES=${1:-"2,3"}
 AGENT_GROUP_NUM=${2:-"8"}
 AGENT_GROUP_SIZE=${3:-"16"}
-VALIDATION_AGENT_GROUP_NUM=${4:-"64,64,64,64,64,64,64,64,64,64,64,64"}
-VALIDATION_AGENT_GROUP_SIZE=${5:-"1,1,1,1,1,1,1,1,1,1,1,1"}
+VALIDATION_AGENT_GROUP_NUM=${4:-"256,256,256,256,256,256,256,256,256,256,256,256,256"}
+VALIDATION_AGENT_GROUP_SIZE=${5:-"1,1,1,1,1,1,1,1,1,1,1,1,1"}
 TRAINING_TASKS=${6:-"tetrisAgent_type_1_dim_4"}
-VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,blocksworldAgent_text,blocksworldAgent_1d,blocksworldAgent_2d_sparse,tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3,tetrisAgent_type_2_dim_4,webshopAgent,birdAgent"}
-N_GPUS_PER_NODE=${8:-1}
+VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,blocksworldAgent_text,blocksworldAgent_1d,blocksworldAgent_2d_sparse,tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3,tetrisAgent_type_2_dim_4,webshopAgent,birdAgent,birdAgent_5_turns"}
+N_GPUS_PER_NODE=${8:-2}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"tetris_qwen_halfb_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen2.5-0.5B-Instruct"}
 # Training control
-TOTAL_TRAINING_STEPS=${13:-100}  # default 100 for Tetris
+TOTAL_TRAINING_STEPS=${12:-100}  # default 100 for Tetris
 
 echo "=== Tetris PPO Training with Qwen 0.5B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
@@ -75,9 +75,9 @@ python grl/train.py \
 echo "Training completed. Log: $LOG_FILE"
 
 # ------ Usage Examples ------
-# Default: ./qwen_halb.sh
-# Custom GPUs: ./qwen_halb.sh "0,1"
-# Custom agent groups: ./qwen_halb.sh "0" "16" "32"
-# Custom validation groups: ./qwen_halb.sh "0" "8" "16" "128,128" "1,1"
-# Custom tasks: ./qwen_halb.sh "0" "8" "16" "64,64" "1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3"
-# Full custom: ./qwen_halb.sh "0,1" "8" "16" "64,64,64,64" "1,1,1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3" 2 "my_project" "my_experiment" "Qwen/Qwen2.5-0.5B-Instruct"
+# Default: ./qwen_halfb.sh
+# Custom GPUs: ./qwen_halfb.sh "0,1"
+# Custom agent groups: ./qwen_halfb.sh "0,1" "16" "32"
+# Custom validation groups: ./qwen_halfb.sh "0,1" "8" "16" "256,256" "1,1"
+# Custom tasks: ./qwen_halfb.sh "0,1" "8" "16" "256,256" "1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3"
+# Full custom: ./qwen_halfb.sh "0,1" "8" "16" "256,256,256,256" "1,1,1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3" 2 "my_project" "my_experiment" "Qwen/Qwen2.5-0.5B-Instruct" 100

@@ -7,10 +7,10 @@
 CUDA_VISIBLE_DEVICES=${1:-"0,1,2,3"}
 AGENT_GROUP_NUM=${2:-"8"}
 AGENT_GROUP_SIZE=${3:-"16"}
-VALIDATION_AGENT_GROUP_NUM=${4:-"256,256,256,256,256,256,256,256,256,256,256,256"}
-VALIDATION_AGENT_GROUP_SIZE=${5:-"1,1,1,1,1,1,1,1,1,1,1,1"}
+VALIDATION_AGENT_GROUP_NUM=${4:-"256,256,256,256,256,256,256,256,256,256,256,256,256"}
+VALIDATION_AGENT_GROUP_SIZE=${5:-"1,1,1,1,1,1,1,1,1,1,1,1,1"}
 TRAINING_TASKS=${6:-"simpleSokobanAgent"}
-VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,blocksworldAgent_text,blocksworldAgent_1d,blocksworldAgent_2d_sparse,tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3,tetrisAgent_type_2_dim_4,webshopAgent,birdAgent"}
+VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,blocksworldAgent_text,blocksworldAgent_1d,blocksworldAgent_2d_sparse,tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3,tetrisAgent_type_2_dim_4,webshopAgent,birdAgent,birdAgent_5_turns"}
 N_GPUS_PER_NODE=${8:-4}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"sokoban_qwen_7b_$(date +"%Y%m%d_%H%M%S")"}

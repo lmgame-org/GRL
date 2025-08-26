@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tetris PPO Training with Qwen 7B
+# Tetris PPO Training with Qwen 3B
 # Configurable script with key training parameters
 
 # ------ Configurable Parameters ------
@@ -12,14 +12,14 @@ VALIDATION_AGENT_GROUP_SIZE=${5:-"1,1,1,1,1,1,1,1,1,1,1,1,1"}
 TRAINING_TASKS=${6:-"tetrisAgent_type_1_dim_4"}
 VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,blocksworldAgent_text,blocksworldAgent_1d,blocksworldAgent_2d_sparse,tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3,tetrisAgent_type_2_dim_4,webshopAgent,birdAgent,birdAgent_5_turns"}
 N_GPUS_PER_NODE=${8:-4}
-PROJECT_NAME=${9:-"lmgame_train"}
-EXPERIMENT_NAME=${10:-"tetris_qwen_7b_$(date +"%Y%m%d_%H%M%S")"}
-MODEL_PATH=${11:-"Qwen/Qwen2.5-7B-Instruct"}
+PROJECT_NAME=${9:-"lmgame_train_qwen3b"}
+EXPERIMENT_NAME=${10:-"tetris_qwen_3b_$(date +"%Y%m%d_%H%M%S")"}
+MODEL_PATH=${11:-"Qwen/Qwen2.5-3B-Instruct"}
 GPU_MEMORY_UTILIZATION=${12:-"0.5"}
 # Training control
 TOTAL_TRAINING_STEPS=${13:-100}  # default 100 for Tetris
 
-echo "=== Tetris PPO Training with Qwen 7B ==="
+echo "=== Tetris PPO Training with Qwen 3B ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "Agent Group Num: [$AGENT_GROUP_NUM]"
 echo "Agent Group Size: [$AGENT_GROUP_SIZE]"
@@ -39,7 +39,7 @@ cd "$PROJECT_ROOT"
 
 # Setup logging
 mkdir -p cache
-LOG_FILE="cache/tetris_qwen_7b_$(date +"%Y%m%d_%H%M%S").log"
+LOG_FILE="cache/tetris_qwen_3b_$(date +"%Y%m%d_%H%M%S").log"
 echo "Logging to: $LOG_FILE"
 
 # ------ Environment Setup ------
@@ -75,12 +75,15 @@ python grl/train.py \
   model_path="$MODEL_PATH" \
   2>&1 | tee "$LOG_FILE"
 
+# Make the script executable note
+# chmod +x examples/tetris_ppo/qwen_3b.sh
+
 echo "Training completed. Log: $LOG_FILE"
 
 # ------ Usage Examples ------
-# Default: ./qwen_7b.sh
-# Custom GPUs: ./qwen_7b.sh "0,1"
-# Custom agent groups: ./qwen_7b.sh "0,1,2,3" "16" "32"
-# Custom validation groups: ./qwen_7b.sh "0,1,2,3" "8" "16" "512,512" "1,1"
-# Custom tasks: ./qwen_7b.sh "0,1,2,3" "8" "16" "256,256" "1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3"
-# Full custom: ./qwen_7b.sh "0,1,2,3" "8" "16" "256,256,256,256" "1,1,1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3" 4 "my_project" "my_experiment" "Qwen/Qwen2.5-7B-Instruct" 100
+# Default: ./qwen_3b.sh
+# Custom GPUs: ./qwen_3b.sh "0,1"
+# Custom agent groups: ./qwen_3b.sh "0,1,2,3" "16" "32"
+# Custom validation groups: ./qwen_3b.sh "0,1,2,3" "8" "16" "512,512" "1,1"
+# Custom tasks: ./qwen_3b.sh "0,1,2,3" "8" "16" "256,256" "1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3"
+# Full custom: ./qwen_3b.sh "0,1,2,3" "8" "16" "256,256,256,256" "1,1,1,1" "tetrisAgent_type_1_dim_4" "tetrisAgent_type_1_dim_4,tetrisAgent_type_2_dim_3" 4 "my_project" "my_experiment" "Qwen/Qwen2.5-3B-Instruct" 100
