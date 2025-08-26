@@ -33,3 +33,10 @@ how can we support different environment evaluation?
 
 
 ![tunix_train_sample](assets/tunix_train_sample.png)
+
+
+
+Tunix Integration Updates (08/28): 
+
+1. wandb metric logs (skip every 8/16 steps) per-step supporting
+2. validaiton rollout (1.a larger requirement of cache size)

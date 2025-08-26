@@ -559,25 +559,21 @@ class MultiTurnPpoLearner(PpoLearner):
           validation=True,
       )
 
-    # Run a single validation rollout
+    # Run a single validation rollout (no filtering in validation)
     mt_batch = self.validation_multi_turn_rollout.rollout()
-    mt_batch_filtered, mt_metrics = self.validation_multi_turn_rollout.filter_rollout_batch(mt_batch)
 
-    # Collect metrics
-    mt_metrics_dict = dict(mt_metrics)
-    meta_metrics_dict = dict(mt_batch_filtered.meta_info.get("metrics", {}))
+    # Collect metrics directly from rollout batch
+    metrics_dict = dict(mt_batch.meta_info.get("metrics", {}))
 
     # Log only rollout metrics using the critic/actor logger to EVAL stream
     step = self._get_metric_logging_steps(metrics_logger.Mode.EVAL)
-    for name, value in mt_metrics_dict.items():
-      self._actor_metrics_logger.log(name, float(value), metrics_logger.Mode.EVAL, step)
-    for name, value in meta_metrics_dict.items():
+    for name, value in metrics_dict.items():
       self._actor_metrics_logger.log(name, float(value), metrics_logger.Mode.EVAL, step)
 
     # Optionally log completion lengths from loss_mask for visibility (still rollout-derived)
     try:
       import numpy as _np
-      _cm = _np.array(mt_batch_filtered.loss_mask)
+      _cm = _np.array(mt_batch.loss_mask)
       _agg = _cm.sum(axis=-1)
       self._actor_metrics_logger.log("completions/mean_length", _agg.mean(), metrics_logger.Mode.EVAL, step)
       self._actor_metrics_logger.log("completions/max_length", _agg.max(), metrics_logger.Mode.EVAL, step)
@@ -641,6 +637,7 @@ class MultiTurnPpoLearner(PpoLearner):
             if eval_every and eval_every > 0:
               current_steps = self.rl_cluster.actor_trainer.train_steps
               if current_steps % eval_every == 0:
+                print(f"[VALIDATION] Triggering validation at train_step={current_steps} (eval_every_n_steps={eval_every})")
                 self._validate(None)
         # call to throw stop iteration as a signal to break the loop
         future.result()

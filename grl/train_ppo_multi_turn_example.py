@@ -61,6 +61,11 @@ multi_turn_cfg = OmegaConf.merge(base_cfg, agents_cfg)
 # Override rollout grouping for quicker testing
 multi_turn_cfg.rollout.agent_group_num = [8]
 multi_turn_cfg.rollout.agent_group_size = [16]
+# Override validation rollout grouping
+# Use only Sokoban for validation (exclude other environments)
+multi_turn_cfg.rollout.validation = ["simpleSokobanAgent"]
+multi_turn_cfg.rollout.validation_agent_group_num = [64]
+multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # Limit turns for faster iteration
 # multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
 
@@ -88,9 +93,9 @@ TOP_K = 50
 
 # Training loop setup
 BATCH_SIZE = 4
-NUM_BATCHES = 128 * 200
+NUM_BATCHES = 200
 NUM_TEST_BATCHES = 100  # not used in this script but kept for completeness
-EVAL_EVERY_N_STEPS = 10
+EVAL_EVERY_N_STEPS = 16
 NUM_EPOCHS = 1
 MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
 CPU_OFFLOAD = False
