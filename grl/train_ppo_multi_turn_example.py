@@ -88,7 +88,7 @@ TOP_K = 50
 
 # Training loop setup
 BATCH_SIZE = 4
-NUM_BATCHES = 200
+NUM_BATCHES = 128 * 200
 NUM_TEST_BATCHES = 100  # not used in this script but kept for completeness
 EVAL_EVERY_N_STEPS = 10
 NUM_EPOCHS = 1

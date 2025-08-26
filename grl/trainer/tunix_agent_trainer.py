@@ -69,6 +69,10 @@ class MultiTurnPpoLearner(PpoLearner):
     # ─────────────────── Multi-turn rollout manager ───────────────────
     # Initialize when config is provided; otherwise remain None (fallback to single-turn)
     self.multi_turn_rollout = None
+    self.validation_multi_turn_rollout = None
+    # Keep references for potential re-init
+    self._multi_turn_cfg = multi_turn_cfg
+    self._multi_turn_processor = multi_turn_processor
     if multi_turn_cfg is not None:
       # Use the RLCluster tokenizer; pass through cfg/processor from caller
       self.multi_turn_rollout = SyncMultiTurnRollout(
@@ -77,6 +81,14 @@ class MultiTurnPpoLearner(PpoLearner):
           tokenizer=self.rl_cluster.tokenizer,
           processor=multi_turn_processor,
           validation=multi_turn_validation,
+      )
+      # Create a dedicated validation rollout with validation=True
+      self.validation_multi_turn_rollout = SyncMultiTurnRollout(
+          rl_cluster=self.rl_cluster,
+          cfg=multi_turn_cfg,
+          tokenizer=self.rl_cluster.tokenizer,
+          processor=multi_turn_processor,
+          validation=True,
       )
     # Storage for last built rollout batch to aid later conversion to TrainExample
     self._last_rollout_batch = None
@@ -527,6 +539,57 @@ class MultiTurnPpoLearner(PpoLearner):
         data_queue.put(None)
         raise e
 
+  def _validate(self, eval_ds: Iterable[_TrainingInputT]) -> None:
+    """Runs a single validation rollout and logs rollout-only metrics.
+
+    This method ignores `eval_ds`. It performs one validation rollout using
+    `validation_multi_turn_rollout` and logs only the rollout metrics (both
+    filter metrics and meta metrics) under EVAL mode. No advantages or updates
+    are computed.
+    """
+    # Ensure validation rollout exists
+    if self.validation_multi_turn_rollout is None:
+      if self._multi_turn_cfg is None:
+        raise RuntimeError("Multi-turn validation requested but no multi_turn_cfg provided.")
+      self.validation_multi_turn_rollout = SyncMultiTurnRollout(
+          rl_cluster=self.rl_cluster,
+          cfg=self._multi_turn_cfg,
+          tokenizer=self.rl_cluster.tokenizer,
+          processor=self._multi_turn_processor,
+          validation=True,
+      )
+
+    # Run a single validation rollout
+    mt_batch = self.validation_multi_turn_rollout.rollout()
+    mt_batch_filtered, mt_metrics = self.validation_multi_turn_rollout.filter_rollout_batch(mt_batch)
+
+    # Collect metrics
+    mt_metrics_dict = dict(mt_metrics)
+    meta_metrics_dict = dict(mt_batch_filtered.meta_info.get("metrics", {}))
+
+    # Log only rollout metrics using the critic/actor logger to EVAL stream
+    step = self._get_metric_logging_steps(metrics_logger.Mode.EVAL)
+    for name, value in mt_metrics_dict.items():
+      self._actor_metrics_logger.log(name, float(value), metrics_logger.Mode.EVAL, step)
+    for name, value in meta_metrics_dict.items():
+      self._actor_metrics_logger.log(name, float(value), metrics_logger.Mode.EVAL, step)
+
+    # Optionally log completion lengths from loss_mask for visibility (still rollout-derived)
+    try:
+      import numpy as _np
+      _cm = _np.array(mt_batch_filtered.loss_mask)
+      _agg = _cm.sum(axis=-1)
+      self._actor_metrics_logger.log("completions/mean_length", _agg.mean(), metrics_logger.Mode.EVAL, step)
+      self._actor_metrics_logger.log("completions/max_length", _agg.max(), metrics_logger.Mode.EVAL, step)
+      self._actor_metrics_logger.log("completions/min_length", _agg.min(), metrics_logger.Mode.EVAL, step)
+    except Exception:
+      pass
+
+    # Reset validation rollout to release memory
+    self.validation_multi_turn_rollout.reset()
+    # Advance eval step counter
+    self._eval_steps += 1
+
   def train(
       self,
       train_ds: Iterable[_TrainingInputT],
@@ -542,8 +605,6 @@ class MultiTurnPpoLearner(PpoLearner):
         train_data_queue = queue_lib.SimpleDataQueue(
             maxsize=self.grad_acc_steps + 2
         )
-        # reserve 1 for None
-        eval_data_queue = queue_lib.SimpleDataQueue(maxsize=2)
         initial_train_steps = self._train_steps
         future = self.executor.submit(
             self._prepare_data,
@@ -555,7 +616,6 @@ class MultiTurnPpoLearner(PpoLearner):
             async_loading=self.can_enable_async_rollout,
             mode=metrics_logger.Mode.TRAIN,
         )
-        curr_eval_ds = None
         with jax.profiler.StepTraceAnnotation(
             "trainer", step_num=initial_train_steps
         ):
@@ -563,27 +623,25 @@ class MultiTurnPpoLearner(PpoLearner):
             curr_train_ds = train_data_queue.get(block=True)
             if curr_train_ds is None:
               break
-            if eval_ds and not curr_eval_ds:
-              self._prepare_data(
-                  iterator=iter(eval_ds),
-                  mini_batch_size=None,
-                  proceed_num_steps=-1,
-                  batch_repeat=1,
-                  data_queue=eval_data_queue,
-                  async_loading=False,
-                  mode=metrics_logger.Mode.EVAL,
-              )
-              curr_eval_ds = eval_data_queue.get(block=True)
             self.rl_cluster.update_actor(
                 curr_train_ds,
-                curr_eval_ds,
+                None,
                 skip_jit,
             )  # loop over μ
             self.rl_cluster.update_critic(
                 curr_train_ds,
-                curr_eval_ds,
+                None,
                 skip_jit,
             )  # loop over μ
+            # Trigger rollout-only validation at configured interval
+            try:
+              eval_every = self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+            except Exception:
+              eval_every = 0
+            if eval_every and eval_every > 0:
+              current_steps = self.rl_cluster.actor_trainer.train_steps
+              if current_steps % eval_every == 0:
+                self._validate(None)
         # call to throw stop iteration as a signal to break the loop
         future.result()
         # Sync the train steps with internal trainer, this is based on the
