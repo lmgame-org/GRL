@@ -8,6 +8,7 @@ commented out for Python execution.
 # Model definitions and parameter loading (Tunix/Qwen2)
 from tunix.models.qwen2 import params
 from tunix.models.qwen2 import model
+import wandb
 
 # JAX/Flax core
 import jax
@@ -38,6 +39,7 @@ import gc
 import os
 import time
 from pathlib import Path
+import shutil
 from jax_smi import initialise_tracking
 
 initialise_tracking()
@@ -57,15 +59,15 @@ base_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/base.yaml")
 agents_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/agents.yaml")
 multi_turn_cfg = OmegaConf.merge(base_cfg, agents_cfg)
 # Override rollout grouping for quicker testing
-multi_turn_cfg.rollout.agent_group_num = [4]
-multi_turn_cfg.rollout.agent_group_size = [8]
+multi_turn_cfg.rollout.agent_group_num = [8]
+multi_turn_cfg.rollout.agent_group_size = [16]
 # Limit turns for faster iteration
 # multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
 
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO
 NUM_PPO_EPOCHS = 1
-MINI_BATCH_SIZE = 1
+MINI_BATCH_SIZE = 2
 GAMMA = 1.0
 GAE_LAMBDA = 0.95
 BETA = 0.0  # Disable KL to reduce memory
@@ -75,7 +77,7 @@ CLIP_RANGE_VALUE = 0.2
 
 # --- Cluster / trainer / rollout configuration ---
 # Sharding (fsdp, tp) — adjust to available devices
-MESH = [(1, 2), ("fsdp", "tp")]
+MESH = [(2, 2), ("fsdp", "tp")]
 
 # Rollout (GRPO generation) parameters
 MAX_PROMPT_LENGTH = 2048
@@ -85,12 +87,13 @@ TOP_P = 1.0
 TOP_K = 50
 
 # Training loop setup
-BATCH_SIZE = 1
+BATCH_SIZE = 4
 NUM_BATCHES = 200
 NUM_TEST_BATCHES = 100  # not used in this script but kept for completeness
 EVAL_EVERY_N_STEPS = 10
 NUM_EPOCHS = 1
 MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
+CPU_OFFLOAD = False
 
 # Optimizer/scheduler
 LEARNING_RATE = 3e-6
@@ -270,8 +273,24 @@ checkpointing_options = ocp.CheckpointManagerOptions(
 )
 
 # Metrics logger
+# Ensure a single TensorBoard log directory is cleaned per run
+TB_LOG_DIR = "/home/vanitas/lmgame_projects/GRL/content/tmp/tensorboard/ppo"
+# Close any stray W&B run from previous initializations in-process
+try:
+  wandb.finish()
+except Exception:
+  pass
+
+# Reset checkpoint and tensorboard directories to avoid auto-restore/mixing logs
+def _reset_dir(path: str):
+  if os.path.exists(path):
+    shutil.rmtree(path, ignore_errors=True)
+  os.makedirs(path, exist_ok=True)
+
+_reset_dir(CKPT_DIR)
+_reset_dir(TB_LOG_DIR)
 metrics_logging_options = metrics_logger.MetricsLoggerOptions(
-    log_dir="/home/vanitas/lmgame_projects/GRL/content/tmp/tensorboard/ppo", flush_every_n_steps=20
+    log_dir=TB_LOG_DIR, flush_every_n_steps=20
 )
 
 # Optimizer, learning rate scheduler, gradient clipping
@@ -303,7 +322,7 @@ cluster_config = rl_cluster_lib.ClusterConfig(
         rl_cluster_lib.Role.ROLLOUT: mesh,
     },
     rollout_engine='vanilla',
-    offload_to_cpu=False,
+    offload_to_cpu=CPU_OFFLOAD,
     training_config=rl_cluster_lib.RLTrainingConfig(
         actor_optimizer=optimizer,
         critic_optimizer=optimizer,
@@ -356,5 +375,11 @@ ppo_trainer = MultiTurnPpoLearner(
 
 with mesh:
     ppo_trainer.train(dataset)
+
+
+try:
+    wandb.finish()
+except Exception:
+    pass
 
 

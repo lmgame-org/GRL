@@ -1,10 +1,10 @@
-# Base configuration for PPO training with Sokoban agents
-# This configuration follows the hydra structure with defaults and overrides
+## Tunix base configuration for PPO training with Sokoban agents
+## This mirrors the structure of `configs/base.yaml` for consistency
+
 # ------ Hydra Config ------
 
 defaults:
   - agents
-  - ppo_trainer
   - _self_
 
 # ------ Rollout Configuration ------
@@ -30,19 +30,57 @@ rollout:
   # Show tqdm progress bars for concurrent steps
   show_tqdm: False
 
+
 # ------ Training Parameters ------
-train_batch_size: 128
-micro_batch_size_per_gpu: 4
-ppo_micro_batch_size_per_gpu: 4
-ppo_mini_batch_size: 32
-total_training_steps: 200
-n_gpus_per_node: 1
-max_prompt_length: 4096
-max_response_length: 400
-test_freq: 10
-save_freq: -1
-gpu_memory_utilization: 0.5
-model_path: Qwen/Qwen2.5-0.5B-Instruct
-project_name: lmgame_train
-experiment_name: sokoban_train_example
-resume_mode: disable
+
+####### PPO hyperparameters used by Tunix PPO #######
+NUM_PPO_EPOCHS = 1
+MINI_BATCH_SIZE = 1
+GAMMA = 1.0
+GAE_LAMBDA = 0.95
+BETA = 0.0  # Disable KL to reduce memory
+EPSILON = 0.2
+VF_COEF = 0.1
+CLIP_RANGE_VALUE = 0.2
+
+####### Cluster / trainer / rollout configuration #######
+# Sharding (fsdp, tp) — adjust to available devices
+MESH = [(1, 2), ("fsdp", "tp")]
+
+####### Rollout (GRPO generation) parameters #######
+MAX_PROMPT_LENGTH = 2048
+TOTAL_GENERATION_STEPS =  256
+TEMPERATURE = 0.9
+TOP_P = 1.0
+TOP_K = 50
+
+####### Training loop setup #######
+BATCH_SIZE = 1
+NUM_BATCHES = 200
+NUM_TEST_BATCHES = 100  # not used in this script but kept for completeness
+EVAL_EVERY_N_STEPS = 10
+NUM_EPOCHS = 1
+MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
+
+
+####### Optimizer/scheduler #######
+LEARNING_RATE = 3e-6
+B1 = 0.9
+B2 = 0.99
+WEIGHT_DECAY = 0.1
+WARMUP_STEPS = 0.1 * MAX_STEPS
+MAX_GRAD_NORM = 0.1
+
+
+# Checkpointing
+INTERMEDIATE_CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/intermediate_ckpt/"
+CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/ckpts/"
+SAVE_INTERVAL_STEPS = 500
+MAX_TO_KEEP = 4
+
+####### Inference presets (optional) #######
+GENERATION_CONFIGS = {
+    "greedy": {"temperature": 1e-4, "top_k": 1, "top_p": 1.0},
+    "standard": {"temperature": 0.7, "top_k": 50, "top_p": 0.95},
+    "liberal": {"temperature": 0.85, "top_k": 2000, "top_p": 1.0},
+}

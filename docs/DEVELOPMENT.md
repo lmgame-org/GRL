@@ -50,6 +50,8 @@ Location: `trainer/agent_trainer.py`
   - [ ] test the training workflow in tunix_train.py
     - [✅] draft a runnable tunix multi-turn rl training
     - [✅] wandb metric visualization
+    - [ ] validation implementation
+    - [ ] align with hyperparameters
     - [ ] wrap up tunix training code 
       - [✅] critic model building + critic tpu allocation
       - [✅] reward score allocation
@@ -57,8 +59,6 @@ Location: `trainer/agent_trainer.py`
       - [ ] cpu_offload; fsdp + tp to reduce memory
       - [ ] calculate memory consumption
       - [ ] abstract a uniform yaml config file
-    - [ ] validation implementation
-    - [ ] align with hyperparameters
 - [ ] Abstract the framework to integrate different trainers
 
 #### 2.6 Tooling & Build
