@@ -64,7 +64,7 @@ multi_turn_cfg.rollout.agent_group_size = [16]
 # Override validation rollout grouping
 # Use only Sokoban for validation (exclude other environments)
 multi_turn_cfg.rollout.validation = ["simpleSokobanAgent"]
-multi_turn_cfg.rollout.validation_agent_group_num = [64]
+multi_turn_cfg.rollout.validation_agent_group_num = [128]
 multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # Limit turns for faster iteration
 # multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
@@ -72,9 +72,9 @@ multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO
 NUM_PPO_EPOCHS = 1
-MINI_BATCH_SIZE = 2
+MINI_BATCH_SIZE = 4
 GAMMA = 1.0
-GAE_LAMBDA = 0.95
+GAE_LAMBDA = 1.0
 BETA = 0.0  # Disable KL to reduce memory
 EPSILON = 0.2
 VF_COEF = 0.1
@@ -92,8 +92,11 @@ TOP_P = 1.0
 TOP_K = 50
 
 # Training loop setup
-NUM_BATCHES = 200 * 16
-EVAL_EVERY_N_STEPS = 160
+NUM_BATCHES = 200 * 32 / MINI_BATCH_SIZE
+EVAL_EVERY_N_STEPS = 10 * 32 / MINI_BATCH_SIZE
+# Debug validation use small batch size
+# NUM_BATCHES = 20
+# EVAL_EVERY_N_STEPS = 10
 NUM_EPOCHS = 1
 MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
 CPU_OFFLOAD = False
@@ -101,7 +104,7 @@ CPU_OFFLOAD = False
 # Optimizer/scheduler
 LEARNING_RATE = 3e-6
 B1 = 0.9
-B2 = 0.99
+B2 = 0.999
 WEIGHT_DECAY = 0.1
 WARMUP_STEPS = 0.1 * MAX_STEPS
 MAX_GRAD_NORM = 0.1

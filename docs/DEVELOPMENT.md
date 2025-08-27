@@ -52,8 +52,9 @@ Location: `trainer/agent_trainer.py`
     - [✅] wandb metric visualization
     - [ ] validation implementation
       - [✅] draft validation rollout
-      - [ ] understand tunix trianing and validtion logic for better integration
-      - [ ] solve metric logging problem
+      - [✅] understand tunix trianing and validtion logic for better integration
+      - [✅] solve metric logging problem
+    - [ ] try critic model automated surgery
     - [ ] align with hyperparameters
     - [ ] wrap up tunix training code 
       - [✅] critic model building + critic tpu allocation
