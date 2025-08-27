@@ -39,4 +39,4 @@ how can we support different environment evaluation?
 Tunix Integration Updates (08/28): 
 
 1. wandb metric logs (skip every 8/16 steps) per-step supporting
-2. validaiton rollout (1.a larger requirement of cache size)
+2. validaiton rollout (1.a larger requirement of cache size), cache size (prompt_length, generation_steps - rollout) (mini-batch-size - training)

@@ -50,12 +50,12 @@ Location: `trainer/agent_trainer.py`
   - [ ] test the training workflow in tunix_train.py
     - [✅] draft a runnable tunix multi-turn rl training
     - [✅] wandb metric visualization
-    - [ ] validation implementation
+    - [✅] validation implementation
       - [✅] draft validation rollout
       - [✅] understand tunix trianing and validtion logic for better integration
       - [✅] solve metric logging problem
+    - [ ] align with hyperparameters and research ppo update
     - [ ] try critic model automated surgery
-    - [ ] align with hyperparameters
     - [ ] wrap up tunix training code 
       - [✅] critic model building + critic tpu allocation
       - [✅] reward score allocation

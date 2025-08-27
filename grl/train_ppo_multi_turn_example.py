@@ -72,13 +72,13 @@ multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO
 NUM_PPO_EPOCHS = 1
-MINI_BATCH_SIZE = 4
+MINI_BATCH_SIZE = 2
 GAMMA = 1.0
 GAE_LAMBDA = 1.0
-BETA = 0.0  # Disable KL to reduce memory
+BETA = 0.001  # Enable KL in reward (aligned with kl_coef)
 EPSILON = 0.2
 VF_COEF = 0.1
-CLIP_RANGE_VALUE = 0.2
+CLIP_RANGE_VALUE = 0.5
 
 # --- Cluster / trainer / rollout configuration ---
 # Sharding (fsdp, tp) — adjust to available devices
@@ -92,8 +92,8 @@ TOP_P = 1.0
 TOP_K = 50
 
 # Training loop setup
-NUM_BATCHES = 200 * 32 / MINI_BATCH_SIZE
-EVAL_EVERY_N_STEPS = 10 * 32 / MINI_BATCH_SIZE
+NUM_BATCHES = int(200 * 32 / MINI_BATCH_SIZE)
+EVAL_EVERY_N_STEPS = int(10 * 32 / MINI_BATCH_SIZE)
 # Debug validation use small batch size
 # NUM_BATCHES = 20
 # EVAL_EVERY_N_STEPS = 10
@@ -102,12 +102,12 @@ MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
 CPU_OFFLOAD = False
 
 # Optimizer/scheduler
-LEARNING_RATE = 3e-6
+LEARNING_RATE = 1e-6
 B1 = 0.9
 B2 = 0.999
-WEIGHT_DECAY = 0.1
-WARMUP_STEPS = 0.1 * MAX_STEPS
-MAX_GRAD_NORM = 0.1
+WEIGHT_DECAY = 0.01
+WARMUP_STEPS = 0
+MAX_GRAD_NORM = 1.0
 
 # Checkpointing
 INTERMEDIATE_CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/intermediate_ckpt/"
@@ -299,13 +299,28 @@ metrics_logging_options = metrics_logger.MetricsLoggerOptions(
     log_dir=TB_LOG_DIR, flush_every_n_steps=20
 )
 
+# Compute effective optimizer steps based on rollout size, filtering and mini-batching
+# (Commented out to align strictly with YAML; use MAX_STEPS and no warmup)
+# try:
+#   total_agents = sum(int(gn) * int(gs) for gn, gs in zip(
+#       multi_turn_cfg.rollout.agent_group_num,
+#       multi_turn_cfg.rollout.agent_group_size,
+#   ))
+#   kept_agents = max(1, int(total_agents * float(multi_turn_cfg.rollout.rollout_filter_ratio)))
+# except Exception:
+#   # Fallback to a reasonable default if config is missing
+#   kept_agents = 32
+# EFFECTIVE_STEPS = int(NUM_BATCHES * (kept_agents / max(1, MINI_BATCH_SIZE)) * NUM_PPO_EPOCHS)
+# WARMUP_STEPS = 0
+DECAY_STEPS = max(1, int(MAX_STEPS))
+
 # Optimizer, learning rate scheduler, gradient clipping
 optimizer = optax.adamw(
     learning_rate=optax.schedules.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=LEARNING_RATE,
         warmup_steps=WARMUP_STEPS,
-        decay_steps=MAX_STEPS,
+        decay_steps=DECAY_STEPS,
         end_value=0.0,
     ),
     b1=B1,
