@@ -25,7 +25,7 @@
 GRL (Game Reinforcement Learning) is an open‑source framework that post‑trains LLMs via multi‑turn reinforcement learning on games, yielding general gains across diverse benchmarks.
 
 ## Release
-<strong>[2025/08/13]</strong> We release GRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning.
+<strong>[2025/08/27]</strong> We release GRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning.
 
 
 ## Installation
