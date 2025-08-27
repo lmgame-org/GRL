@@ -316,6 +316,8 @@ class MultiTurnPpoLearner(PpoLearner):
     # because the rollout batch can be split into mini-batches.
     step = self._get_metric_logging_steps(mode)
 
+
+
     # Log raw scores from the reward model/fn
     self._actor_metrics_logger.log(
         "score/mean", last_token_scores.mean(), mode, step
@@ -539,13 +541,13 @@ class MultiTurnPpoLearner(PpoLearner):
         data_queue.put(None)
         raise e
 
+  # ─────────────────── MODIFICATION: Simple validation rollout logging (EVAL only) ───────────────────
   def _validate(self, eval_ds: Iterable[_TrainingInputT]) -> None:
-    """Runs a single validation rollout and logs rollout-only metrics.
+    """Run a single validation rollout and log ONLY rollout metrics under EVAL.
 
-    This method ignores `eval_ds`. It performs one validation rollout using
-    `validation_multi_turn_rollout` and logs only the rollout metrics (both
-    filter metrics and meta metrics) under EVAL mode. No advantages or updates
-    are computed.
+    - Ignores `eval_ds`; data comes from the environment.
+    - No advantage computation or model updates.
+    - Logs metrics with EVAL mode so dashboards separate train/eval.
     """
     # Ensure validation rollout exists
     if self.validation_multi_turn_rollout is None:
@@ -559,32 +561,43 @@ class MultiTurnPpoLearner(PpoLearner):
           validation=True,
       )
 
-    # Run a single validation rollout (no filtering in validation)
+    # Trigger print for visibility
+    try:
+      eval_every = self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+    except Exception:
+      eval_every = None
+    current_train_steps = self.rl_cluster.actor_trainer.train_steps
+    print(f"[VALIDATION] Start rollout | train_step={current_train_steps} eval_every_n_steps={eval_every}")
+
+    # Run a single validation rollout (no filtering)
     mt_batch = self.validation_multi_turn_rollout.rollout()
 
     # Collect metrics directly from rollout batch
     metrics_dict = dict(mt_batch.meta_info.get("metrics", {}))
 
-    # Log only rollout metrics using the critic/actor logger to EVAL stream
-    step = self._get_metric_logging_steps(metrics_logger.Mode.EVAL)
+    # Use the actor trainer's train_steps for eval logging step to avoid out-of-order issues
+    eval_log_step = current_train_steps
     for name, value in metrics_dict.items():
-      self._actor_metrics_logger.log(name, float(value), metrics_logger.Mode.EVAL, step)
+      try:
+        self._actor_metrics_logger.log(name, float(value), metrics_logger.Mode.EVAL, eval_log_step)
+      except Exception:
+        pass
 
-    # Optionally log completion lengths from loss_mask for visibility (still rollout-derived)
+    # Also log completion lengths from loss_mask for quick sanity
     try:
-      import numpy as _np
-      _cm = _np.array(mt_batch.loss_mask)
+      _cm = np.array(mt_batch.loss_mask)
       _agg = _cm.sum(axis=-1)
-      self._actor_metrics_logger.log("completions/mean_length", _agg.mean(), metrics_logger.Mode.EVAL, step)
-      self._actor_metrics_logger.log("completions/max_length", _agg.max(), metrics_logger.Mode.EVAL, step)
-      self._actor_metrics_logger.log("completions/min_length", _agg.min(), metrics_logger.Mode.EVAL, step)
+      self._actor_metrics_logger.log("completions/mean_length", float(_agg.mean()), metrics_logger.Mode.EVAL, eval_log_step)
+      self._actor_metrics_logger.log("completions/max_length", float(_agg.max()), metrics_logger.Mode.EVAL, eval_log_step)
+      self._actor_metrics_logger.log("completions/min_length", float(_agg.min()), metrics_logger.Mode.EVAL, eval_log_step)
     except Exception:
       pass
 
-    # Reset validation rollout to release memory
+    # Reset to free memory and bump local eval counter
     self.validation_multi_turn_rollout.reset()
-    # Advance eval step counter
     self._eval_steps += 1
+    print(f"[VALIDATION] Done | logged {len(metrics_dict)} metrics at step={eval_log_step}")
+  # ─────────────────── END MODIFICATION ───────────────────
 
   def train(
       self,
@@ -601,6 +614,8 @@ class MultiTurnPpoLearner(PpoLearner):
         train_data_queue = queue_lib.SimpleDataQueue(
             maxsize=self.grad_acc_steps + 2
         )
+        # reserve 1 for None
+        eval_data_queue = queue_lib.SimpleDataQueue(maxsize=2)
         initial_train_steps = self._train_steps
         future = self.executor.submit(
             self._prepare_data,
@@ -612,6 +627,7 @@ class MultiTurnPpoLearner(PpoLearner):
             async_loading=self.can_enable_async_rollout,
             mode=metrics_logger.Mode.TRAIN,
         )
+        curr_eval_ds = None
         with jax.profiler.StepTraceAnnotation(
             "trainer", step_num=initial_train_steps
         ):
@@ -619,31 +635,49 @@ class MultiTurnPpoLearner(PpoLearner):
             curr_train_ds = train_data_queue.get(block=True)
             if curr_train_ds is None:
               break
+            if eval_ds and not curr_eval_ds:
+              self._prepare_data(
+                  iterator=iter(eval_ds),
+                  mini_batch_size=None,
+                  proceed_num_steps=-1,
+                  batch_repeat=1,
+                  data_queue=eval_data_queue,
+                  async_loading=False,
+                  mode=metrics_logger.Mode.EVAL,
+              )
+              curr_eval_ds = eval_data_queue.get(block=True)
             self.rl_cluster.update_actor(
                 curr_train_ds,
-                None,
+                curr_eval_ds,
                 skip_jit,
             )  # loop over μ
             self.rl_cluster.update_critic(
                 curr_train_ds,
-                None,
+                curr_eval_ds,
                 skip_jit,
             )  # loop over μ
-            # Trigger rollout-only validation at configured interval
-            try:
-              eval_every = self.rl_cluster.cluster_config.training_config.eval_every_n_steps
-            except Exception:
-              eval_every = 0
-            if eval_every and eval_every > 0:
-              current_steps = self.rl_cluster.actor_trainer.train_steps
-              if current_steps % eval_every == 0:
-                print(f"[VALIDATION] Triggering validation at train_step={current_steps} (eval_every_n_steps={eval_every})")
-                self._validate(None)
         # call to throw stop iteration as a signal to break the loop
         future.result()
         # Sync the train steps with internal trainer, this is based on the
         # assumption that the trainer internally doesn't reset the train steps.
         self._train_steps = self.rl_cluster.actor_trainer.train_steps
+        # ─────────────────── MODIFICATION: Robust eval trigger on crossed intervals ───────────────────
+        # Fire validation once when we cross an eval interval boundary to avoid missing
+        # triggers when the trainer step jumps by multiple mini-batches in a single outer loop.
+        try:
+          eval_every = self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+        except Exception:
+          eval_every = 0
+        if not hasattr(self, "_last_eval_check_step"):
+          self._last_eval_check_step = 0
+        if eval_every and eval_every > 0:
+          prev_q = self._last_eval_check_step // eval_every
+          curr_q = self._train_steps // eval_every
+          if curr_q > prev_q and self._train_steps > 0:
+            print(f"[VALIDATION] Triggering (crossed interval) at train_step={self._train_steps} (eval_every_n_steps={eval_every})")
+            self._validate(None)
+          self._last_eval_check_step = self._train_steps
+        # ─────────────────── END MODIFICATION ───────────────────
         if self.should_sync_weights:
           with jax.profiler.StepTraceAnnotation(
               "sync_sampler_weights", step_num=initial_train_steps
@@ -656,6 +690,7 @@ class MultiTurnPpoLearner(PpoLearner):
           break
       except StopIteration:
         break
-      
-    self.rl_cluster.actor_trainer.close()
+    # Close critic before actor to ensure any final JAX monitoring callbacks
+    # (which may indirectly call wandb.log) occur while the W&B run is active.
     self.rl_cluster.critic_trainer.close()
+    self.rl_cluster.actor_trainer.close()

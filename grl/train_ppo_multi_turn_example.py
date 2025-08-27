@@ -92,10 +92,8 @@ TOP_P = 1.0
 TOP_K = 50
 
 # Training loop setup
-BATCH_SIZE = 4
-NUM_BATCHES = 200
-NUM_TEST_BATCHES = 100  # not used in this script but kept for completeness
-EVAL_EVERY_N_STEPS = 16
+NUM_BATCHES = 200 * 16
+EVAL_EVERY_N_STEPS = 160
 NUM_EPOCHS = 1
 MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
 CPU_OFFLOAD = False
