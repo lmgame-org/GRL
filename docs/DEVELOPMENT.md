@@ -47,7 +47,7 @@ Location: `trainer/agent_trainer.py`
     - [✅] finish tunix multi turn rollout part
     - [✅] verify the final results ids
   - [✅] integrate it with tunix_agent_trianer.py
-  - [ ] test the training workflow in tunix_train.py
+  - [✅] test the training workflow in tunix_train.py
     - [✅] draft a runnable tunix multi-turn rl training
     - [✅] wandb metric visualization
     - [✅] validation implementation
@@ -55,9 +55,10 @@ Location: `trainer/agent_trainer.py`
       - [✅] understand tunix trianing and validtion logic for better integration
       - [✅] solve metric logging problem
     - [✅] align with hyperparameters 
-    - [ ] research ppo update
-    - [ ] try critic model automated surgery
-    - [ ] wrap up tunix training code 
+    - [✅] research ppo update
+    - [ ] verify verl wandb logging implementation
+    - [ ] try critic model automated surgery again
+    - [ ] wrap up tunix training code and write instruction
       - [✅] critic model building + critic tpu allocation
       - [✅] reward score allocation
       - [✅] prompt ids and completions ids from input ids (pattern analysis)
