@@ -85,11 +85,13 @@ CLIP_RANGE_VALUE = 0.5
 MESH = [(2, 2), ("fsdp", "tp")]
 
 # Rollout (GRPO generation) parameters
+# Max Prompt Length: 4096
+# Max Generation Steps: 400
 MAX_PROMPT_LENGTH = 2048
 TOTAL_GENERATION_STEPS =  256
-TEMPERATURE = 0.9
+TEMPERATURE = 1.0
 TOP_P = 1.0
-TOP_K = 50
+TOP_K = None
 
 # Training loop setup
 NUM_BATCHES = int(200 * 32 / MINI_BATCH_SIZE)

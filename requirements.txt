@@ -81,6 +81,7 @@ sympy
 jinja2
 networkx
 setuptools
+jax-smi
 
 # for downloading the full WebShop dataset
 gdown>=4.6.6

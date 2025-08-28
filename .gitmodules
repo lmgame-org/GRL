@@ -10,3 +10,4 @@
 [submodule "tunix"]
 	path = tunix
 	url = https://github.com/google/tunix.git
+	branch = main

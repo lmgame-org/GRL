@@ -54,13 +54,15 @@ Location: `trainer/agent_trainer.py`
       - [✅] draft validation rollout
       - [✅] understand tunix trianing and validtion logic for better integration
       - [✅] solve metric logging problem
-    - [ ] align with hyperparameters and research ppo update
+    - [✅] align with hyperparameters 
+    - [ ] research ppo update
     - [ ] try critic model automated surgery
     - [ ] wrap up tunix training code 
       - [✅] critic model building + critic tpu allocation
       - [✅] reward score allocation
       - [✅] prompt ids and completions ids from input ids (pattern analysis)
-      - [ ] cpu_offload; fsdp + tp to reduce memory
+      - [✅] fsdp + tp to reduce memory
+      - [ ] try cpu_offload;
       - [ ] calculate memory consumption
       - [ ] abstract a uniform yaml config file
 - [ ] Abstract the framework to integrate different trainers

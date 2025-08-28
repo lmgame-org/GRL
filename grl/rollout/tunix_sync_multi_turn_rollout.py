@@ -483,6 +483,30 @@ class SyncMultiTurnRollout:
             agent_raw_data=agent_raw,
             meta_info=rollout_batch.meta_info,
         )
+
+        # Debug preview: decode a few samples and print corresponding reward scores
+        try:
+            print("[tunix_sync_multi_turn_rollout] Filtered RolloutBatch preview:")
+            print(
+                f"  input_ids shape: {np.shape(filtered.input_ids)}, "
+                f"loss_mask shape: {np.shape(filtered.loss_mask)}, "
+                f"reward_scores shape: {np.shape(filtered.reward_scores)}"
+            )
+            k = min(3, int(filtered.input_ids.shape[0]))
+            texts = self.tokenizer.batch_decode(filtered.input_ids, skip_special_tokens=True)
+            for i in range(k):
+                rs = filtered.reward_scores[i]
+                rs_sum = float(np.sum(rs))
+                rs_last = float(rs[-1]) if rs.shape[0] > 0 else 0.0
+                lm_sum = int(np.sum(filtered.loss_mask[i]))
+                print(
+                    f"  sample[{i}] reward_sum={rs_sum:.4f}, last={rs_last:.4f}, "
+                    f"loss_mask_sum={lm_sum}"
+                )
+                print(f"  text[{i}]: {repr(texts[i])}")
+        except Exception as _e:
+            print("[tunix_sync_multi_turn_rollout] Preview print failed:", _e)
+
         return filtered, metrics
 
     def _collect_final_rollout_states(self) -> List[Dict]:
