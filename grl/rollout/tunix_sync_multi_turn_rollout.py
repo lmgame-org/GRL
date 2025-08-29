@@ -8,6 +8,7 @@ from grl.rollout.utils import RolloutBatch
 import jax.numpy as jnp
 import jax
 import numpy as np
+from tunix.rl.rl_cluster import Mode
 
 class SyncMultiTurnRollout:
     """
@@ -257,7 +258,8 @@ class SyncMultiTurnRollout:
         Returns:
             RolloutOutput: The rollout output containing text/tokens for completions
         """
-        return self.rl_cluster.generate(prompts=llm_prompts)
+        rollout_mode = Mode.EVAL if self.validation else Mode.TRAIN
+        return self.rl_cluster.generate(prompts=llm_prompts, mode=rollout_mode)
 
     # ─────────────────── MAIN ROLLOUT LOOP ───────────────────
     def rollout(self):
@@ -485,27 +487,27 @@ class SyncMultiTurnRollout:
         )
 
         # Debug preview: decode a few samples and print corresponding reward scores
-        try:
-            print("[tunix_sync_multi_turn_rollout] Filtered RolloutBatch preview:")
-            print(
-                f"  input_ids shape: {np.shape(filtered.input_ids)}, "
-                f"loss_mask shape: {np.shape(filtered.loss_mask)}, "
-                f"reward_scores shape: {np.shape(filtered.reward_scores)}"
-            )
-            k = min(3, int(filtered.input_ids.shape[0]))
-            texts = self.tokenizer.batch_decode(filtered.input_ids, skip_special_tokens=True)
-            for i in range(k):
-                rs = filtered.reward_scores[i]
-                rs_sum = float(np.sum(rs))
-                rs_last = float(rs[-1]) if rs.shape[0] > 0 else 0.0
-                lm_sum = int(np.sum(filtered.loss_mask[i]))
-                print(
-                    f"  sample[{i}] reward_sum={rs_sum:.4f}, last={rs_last:.4f}, "
-                    f"loss_mask_sum={lm_sum}"
-                )
-                print(f"  text[{i}]: {repr(texts[i])}")
-        except Exception as _e:
-            print("[tunix_sync_multi_turn_rollout] Preview print failed:", _e)
+        # try:
+        #     print("[tunix_sync_multi_turn_rollout] Filtered RolloutBatch preview:")
+        #     print(
+        #         f"  input_ids shape: {np.shape(filtered.input_ids)}, "
+        #         f"loss_mask shape: {np.shape(filtered.loss_mask)}, "
+        #         f"reward_scores shape: {np.shape(filtered.reward_scores)}"
+        #     )
+        #     k = min(3, int(filtered.input_ids.shape[0]))
+        #     texts = self.tokenizer.batch_decode(filtered.input_ids, skip_special_tokens=True)
+        #     for i in range(k):
+        #         rs = filtered.reward_scores[i]
+        #         rs_sum = float(np.sum(rs))
+        #         rs_last = float(rs[-1]) if rs.shape[0] > 0 else 0.0
+        #         lm_sum = int(np.sum(filtered.loss_mask[i]))
+        #         print(
+        #             f"  sample[{i}] reward_sum={rs_sum:.4f}, last={rs_last:.4f}, "
+        #             f"loss_mask_sum={lm_sum}"
+        #         )
+        #         print(f"  text[{i}]: {repr(texts[i])}")
+        # except Exception as _e:
+        #     print("[tunix_sync_multi_turn_rollout] Preview print failed:", _e)
 
         return filtered, metrics
 

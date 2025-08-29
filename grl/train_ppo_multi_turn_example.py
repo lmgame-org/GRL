@@ -72,18 +72,21 @@ multi_turn_cfg.rollout.validation_agent_group_size = [1]
 
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO (aligned with YAML)
+filter_ratio = 0.25
+TRAINING_BATCH_SIZE = multi_turn_cfg.rollout.agent_group_num * multi_turn_cfg.rollout.agent_group_size * filter_ratio
 NUM_PPO_EPOCHS = 1
 MINI_BATCH_SIZE = 4
 GAMMA = 1.0
 GAE_LAMBDA = 1.0
 BETA = 0.001  # base.yaml algorithm.kl_ctrl.kl_coef when use_kl_in_reward=True
 EPSILON = 0.2
-VF_COEF = 0.1
+VF_COEF = 1.0
 CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
 
 # --- Cluster / trainer / rollout configuration ---
 # Sharding (fsdp, tp) — adjust to available devices
 MESH = [(2, 2), ("fsdp", "tp")]
+GRADIENT_ACCUMULATION_STEPS = TRAINING_BATCH_SIZE/MINI_BATCH_SIZE
 
 # Rollout (GRPO generation) parameters (aligned with YAML)
 # Max Prompt Length: 4096
@@ -95,8 +98,8 @@ TOP_P = 1.0
 TOP_K = None
 
 # Training loop setup
-NUM_BATCHES = int(200 * 32 / MINI_BATCH_SIZE)
-EVAL_EVERY_N_STEPS = int(10 * 32 / MINI_BATCH_SIZE)
+NUM_BATCHES = int(200 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
+EVAL_EVERY_N_STEPS = int(10 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
 # Debug validation use small batch size
 # NUM_BATCHES = 20
 # EVAL_EVERY_N_STEPS = 10
@@ -391,21 +394,31 @@ cluster_config = rl_cluster_lib.ClusterConfig(
         critic_optimizer=critic_optimizer,
         eval_every_n_steps=EVAL_EVERY_N_STEPS,
         max_steps=MAX_STEPS,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps= GRADIENT_ACCUMULATION_STEPS,
         # metrics logging
         metrics_logging_options=metrics_logging_options,
         # checkpoint saving
         checkpoint_root_directory=CKPT_DIR,
         checkpointing_options=checkpointing_options,
     ),
-    rollout_config=base_rollout.RolloutConfig(
-        max_tokens_to_generate=TOTAL_GENERATION_STEPS,
-        max_prompt_length=MAX_PROMPT_LENGTH,
-        kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-        temperature=TEMPERATURE,
-        top_p=TOP_P,
-        top_k=TOP_K,
-    ),
+    rollout_config={
+        rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
+            max_tokens_to_generate=TOTAL_GENERATION_STEPS,
+            max_prompt_length=MAX_PROMPT_LENGTH,
+            kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
+            top_k=TOP_K,
+        ),
+        rl_cluster_lib.Mode.EVAL: base_rollout.RolloutConfig(
+            max_tokens_to_generate=TOTAL_GENERATION_STEPS,
+            max_prompt_length=MAX_PROMPT_LENGTH,
+            kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
+            temperature=0.0,
+            top_p=1.0,
+            top_k=None,
+        ),
+    },
 )
 
 # todo: add per-mode rollout config for training and evaluation (especially for validation)

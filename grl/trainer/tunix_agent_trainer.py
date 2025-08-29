@@ -110,9 +110,18 @@ class MultiTurnPpoLearner(PpoLearner):
     """
     pad_value = self.rl_cluster.rollout.pad_id()
     eos_value = self.rl_cluster.rollout.eos_id()
-    max_prompt_length = (
-        self.rl_cluster.cluster_config.rollout_config.max_prompt_length
-    )
+    def _get_rollout_config_for_mode(_mode: metrics_logger.Mode):
+      rc = self.rl_cluster.cluster_config.rollout_config
+      if isinstance(rc, dict):
+        key = (
+          rl_cluster_lib.Mode.TRAIN
+          if _mode == metrics_logger.Mode.TRAIN
+          else rl_cluster_lib.Mode.EVAL
+        )
+        return rc[key]
+      return rc
+
+    max_prompt_length = _get_rollout_config_for_mode(mode).max_prompt_length
     
     # ─────────────────── MODIFICATION: Multi-turn rollout with deferred metrics logging ───────────────────
     # Multi-turn rollout (side-by-side). We defer logging of rollout metrics to the unified
@@ -138,7 +147,7 @@ class MultiTurnPpoLearner(PpoLearner):
     #   completion_ids = input_ids[:, 1:]
     #   completion_mask = loss_mask (already aligned to completion_ids)
     #   completion_plus_one_mask constructed like Tunix for value alignment
-    def _convert_rollout_batch_to_tunix_format(batch):
+    def _convert_rollout_batch_to_tunix_format(batch, Pmax: int):
       inp = np.array(batch.input_ids)
       loss_m = np.array(batch.loss_mask).astype(bool)  # [B, L-1]
       B, L = inp.shape
@@ -148,7 +157,6 @@ class MultiTurnPpoLearner(PpoLearner):
       fc_completion = inp[:, 1:]  # [B, L-1]
 
       # Left-pad prompt to max_prompt_length with pad_id
-      Pmax = int(self.rl_cluster.cluster_config.rollout_config.max_prompt_length)
       pad_id = int(self.rl_cluster.rollout.pad_id())
       if fc_prompt.shape[1] > Pmax:
         prompt_padded = fc_prompt[:, -Pmax:]
@@ -191,7 +199,10 @@ class MultiTurnPpoLearner(PpoLearner):
       completion_mask,
       eos_idx,
       completion_plus_one_mask,
-    ) = _convert_rollout_batch_to_tunix_format(self._last_rollout_batch)
+    ) = _convert_rollout_batch_to_tunix_format(
+      self._last_rollout_batch,
+      int(max_prompt_length),
+    )
 
     batch_size = completion_ids.shape[0]
     # ─────────────────── END MODIFICATION ───────────────────
@@ -359,6 +370,73 @@ class MultiTurnPpoLearner(PpoLearner):
     if meta_metrics_dict is not None:
       for name, value in meta_metrics_dict.items():
         self._actor_metrics_logger.log(name, float(value), mode, step)
+    # ─────────────────── END MODIFICATION ───────────────────
+
+    # ─────────────────── MODIFICATION: Descriptive debug printout (apple-to-apple comparison) ───────────────────
+    try:
+      # Toggle via training_config.debug_step_print; default True if missing
+      debug_print = True
+      if debug_print:
+        def _safe_shape(x):
+          try:
+            return tuple(x.shape)
+          except Exception:
+            return None
+
+        shapes_info = {
+          "prompt_ids": _safe_shape(prompt_ids),
+          "completion_ids": _safe_shape(completion_ids),
+          "prompt_mask": _safe_shape(prompt_mask),
+          "completion_mask": _safe_shape(completion_mask),
+          "completion_plus_one_mask": _safe_shape(completion_plus_one_mask),
+          "ref_per_token_logps": _safe_shape(ref_per_token_logps) if ref_per_token_logps is not None else None,
+          "old_per_token_logps": _safe_shape(old_per_token_logps),
+          "values": _safe_shape(values),
+          "advantages": _safe_shape(advantages),
+          "rewards": _safe_shape(rewards),
+        }
+
+        # Gradient accumulation from training config
+        actor_mini = self.ppo_config.mini_batch_size
+        # In this implementation there is no explicit "micro" per-GPU; accumulation is set directly
+        actor_grad_acc = self.grad_acc_steps
+
+        # KL settings
+        use_kl_loss = False  # PPO policy loss here has no explicit KL term
+        kl_in_reward = bool(self.ppo_config.beta != 0.0)
+
+        # Best-effort mean return from rollout meta metrics (if present this step)
+        mean_return = None
+        try:
+          if hasattr(self, "_last_rollout_batch") and self._last_rollout_batch is not None:
+            # Example meta metrics key used earlier
+            pass
+        except Exception:
+          pass
+
+        print("\n=== PPO step summary (train_step={}, bs={}, logits_T={}) ===".format(
+          int(self._train_steps), int(batch_size), int(logits_to_keep)
+        ))
+        print("- Shapes:")
+        for k, v in shapes_info.items():
+          if v is not None:
+            print("  * {:<26}: {}".format(k, v))
+
+        print("- Actor batching:")
+        print("  * ppo_mini_batch_size          = {}".format(actor_mini))
+        print("  * gradient_accumulation_steps  = {}".format(actor_grad_acc))
+
+        print("- Loss construction (per micro-batch):")
+        print("  * policy_loss = PPO(pg_loss)")
+        if kl_in_reward:
+          print("  * reward shaping includes KL penalty (beta > 0)")
+        if use_kl_loss:
+          print("  * + kl_loss term (not used in this PPO path)")
+        print("  * Each micro-batch contributes 1/grad_acc to the accumulated gradients; then optimizer.step() after {} micro-batches".format(actor_grad_acc))
+        print("===============================================================\n")
+    except Exception:
+      # Never break training on debug prints
+      pass
     # ─────────────────── END MODIFICATION ───────────────────
 
     # Log completion lengths.
