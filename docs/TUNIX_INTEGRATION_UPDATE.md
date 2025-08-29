@@ -41,3 +41,10 @@ Tunix Integration Updates (08/28):
 1. wandb metric logs (skip every 8/16 steps) per-step supporting
 2. validaiton rollout (1.a larger requirement of cache size), cache size (prompt_length, generation_steps - rollout) (mini-batch-size - training)
 3. critic model building: no lm_head
+
+
+Tunix Integration Updates (09/04):
+
+1. unstable training curve (mini-batch size), v5e still has 32 HBM memory
+
+2. crictic model (qwen model may freeze structure, no lm_head support)

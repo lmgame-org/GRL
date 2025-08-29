@@ -120,14 +120,16 @@ class MultiTurnPpoLearner(PpoLearner):
     mt_metrics_dict = None
     meta_metrics_dict = None
     if self.multi_turn_rollout is not None:
-      mt_batch = self.multi_turn_rollout.rollout()
-      mt_batch_filtered, mt_metrics = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
-      self._last_rollout_batch = mt_batch_filtered
-      # Defer logging of multi-turn metrics to the unified metric logging section
-      mt_metrics_dict = dict(mt_metrics)
-      meta_metrics_dict = dict(mt_batch_filtered.meta_info.get("metrics", {}))
-      # Reset multi-turn rollout to release memory between iterations
-      self.multi_turn_rollout.reset()
+      try:
+        mt_batch = self.multi_turn_rollout.rollout()
+        mt_batch_filtered, mt_metrics = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
+        self._last_rollout_batch = mt_batch_filtered
+        # Defer logging of multi-turn metrics to the unified metric logging section
+        mt_metrics_dict = dict(mt_metrics)
+        meta_metrics_dict = dict(mt_batch_filtered.meta_info.get("metrics", {}))
+      finally:
+        # Always reset to release memory between iterations, even if downstream steps fail
+        self.multi_turn_rollout.reset()
     # ─────────────────── END MODIFICATION ───────────────────
 
     # ─────────────────── MODIFICATION: Full-conversation conversion (replace single-turn rl_cluster.generate) ───────────────────
@@ -694,3 +696,14 @@ class MultiTurnPpoLearner(PpoLearner):
     # (which may indirectly call wandb.log) occur while the W&B run is active.
     self.rl_cluster.critic_trainer.close()
     self.rl_cluster.actor_trainer.close()
+    # Ensure rollout managers are closed to release any held resources
+    try:
+      if self.multi_turn_rollout is not None:
+        self.multi_turn_rollout.close()
+    except Exception:
+      pass
+    try:
+      if self.validation_multi_turn_rollout is not None:
+        self.validation_multi_turn_rollout.close()
+    except Exception:
+      pass

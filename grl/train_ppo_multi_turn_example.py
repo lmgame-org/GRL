@@ -24,6 +24,7 @@ from tunix.rl import rl_cluster as rl_cluster_lib
 from tunix.rl.rollout import base_rollout
 from tunix.rl.ppo.ppo_learner import PpoConfig
 from grl.trainer.tunix_agent_trainer import MultiTurnPpoLearner
+from tunix.rl.utils import create_critic_model
 
 # Config and metrics
 from omegaconf import OmegaConf
@@ -72,7 +73,7 @@ multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO
 NUM_PPO_EPOCHS = 1
-MINI_BATCH_SIZE = 2
+MINI_BATCH_SIZE = 4
 GAMMA = 1.0
 GAE_LAMBDA = 1.0
 BETA = 0.001  # Enable KL in reward (aligned with kl_coef)
@@ -88,7 +89,7 @@ MESH = [(2, 2), ("fsdp", "tp")]
 # Max Prompt Length: 4096
 # Max Generation Steps: 400
 MAX_PROMPT_LENGTH = 2048
-TOTAL_GENERATION_STEPS =  256
+TOTAL_GENERATION_STEPS =  100
 TEMPERATURE = 1.0
 TOP_P = 1.0
 TOP_K = None
@@ -115,7 +116,7 @@ MAX_GRAD_NORM = 1.0
 INTERMEDIATE_CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/intermediate_ckpt/"
 CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/ckpts/"
 SAVE_INTERVAL_STEPS = 500
-MAX_TO_KEEP = 4
+MAX_TO_KEEP = 1
 
 # Inference presets (optional)
 GENERATION_CONFIGS = {
@@ -193,7 +194,7 @@ def build_reference_model_from_ckpt(ckpt_path: str):
   )
   abs_state = nnx.state(abs_qwen2)
   abs_state = jax.tree.map(
-      lambda a, s: jax.ShapeDtypeStruct(a.shape, jnp.float32, sharding=s),
+      lambda a, s: jax.ShapeDtypeStruct(a.shape, jnp.bfloat16, sharding=s),
       abs_state,
       nnx.get_named_sharding(abs_state, mesh),
   )
@@ -229,41 +230,63 @@ At this point, we have:
 """
 
 
-# Critic model (required for PPO): initialize as a fresh Qwen2 and load
-# the same weights as the reference to start
-class Qwen2CriticWithScoreHead(nnx.Module):
-  def __init__(self, backbone: nnx.Module, rngs: nnx.Rngs):
-    self.backbone = backbone
-    hidden_dim = getattr(self.backbone.config, 'embed_dim')
-    self.score = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs)
-
-  def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
-    _ = self.backbone(
-        input_tokens,
-        positions=positions,
-        cache=cache,
-        attention_mask=attention_mask,
-        output_hidden_states=True,
-    )
-    hidden = nnx.pop(self.backbone, nnx.Intermediate)['all_hidden_states'].value
-    if isinstance(hidden, (list, tuple)):
-      hidden = hidden[-1]
-    score = self.score(hidden)
-    return score
-
 def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
-  """Builds a critic from ref backbone and shards it to the provided mesh."""
-  # Create abstract Qwen2 graph and merge ref weights for the backbone
-  abs_mod: nnx.Module = nnx.eval_shape(
-      lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
-  )
-  graph_def, _ = nnx.split(abs_mod)
-  ref_state = nnx.state(_ref_model)
-  backbone = nnx.merge(graph_def, ref_state)
-  critic = Qwen2CriticWithScoreHead(backbone, rngs=nnx.Rngs(params=0))
+  """Build a critic; prefer replacing final head when present, else add score head.
+
+  - If actor has a distinct `lm_head`, use `create_critic_model` to replace it with a scalar head.
+  - If actor uses tied embeddings (no `lm_head`), clone backbone and append a `score` head.
+  """
+  head_name_to_replace = "output_proj"
+  try:
+    critic = create_critic_model(actor_model=_ref_model, seed=0, lm_head_to_replace=head_name_to_replace)
+    print(f"[critic] Using replacement method: replaced '{head_name_to_replace}' with scalar value head.")
+  except AttributeError:
+    # Fallback for tied-embedding models: add a score head on top of cloned backbone
+    print(
+        f"[critic] Replacement head '{head_name_to_replace}' not found; "
+        f"falling back to score-head on final hidden states. "
+        f"tied_embedding={getattr(_model_config, 'use_tied_embedding', None)}"
+    )
+    class Qwen2CriticWithScoreHead(nnx.Module):
+      def __init__(self, backbone: nnx.Module, rngs: nnx.Rngs):
+        self.backbone = backbone
+        hidden_dim = getattr(self.backbone.config, 'embed_dim')
+        self.score = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs)
+
+      def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
+        _ = self.backbone(
+            input_tokens,
+            positions=positions,
+            cache=cache,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+        )
+        hidden = nnx.pop(self.backbone, nnx.Intermediate)['all_hidden_states'].value
+        if isinstance(hidden, (list, tuple)):
+          hidden = hidden[-1]
+        score = self.score(hidden)
+        return score
+
+    # Clone weights into a fresh backbone (no sharing with actor/reference)
+    abs_mod: nnx.Module = nnx.eval_shape(
+        lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
+    )
+    graph_def, _ = nnx.split(abs_mod)
+    ref_state = nnx.state(_ref_model)
+    backbone = nnx.merge(graph_def, ref_state)
+    critic = Qwen2CriticWithScoreHead(backbone, rngs=nnx.Rngs(params=0))
+    print("[critic] Fallback method active: appended 'score' head over final hidden states.")
 
   # Shard critic state consistently with the mesh
   crit_graph_def, crit_state = nnx.split(critic)
+  # Ensure critic params are bf16 to match actor/reference and reduce memory
+  try:
+    crit_state = jax.tree.map(
+        lambda x: x.astype(jnp.bfloat16) if hasattr(x, "dtype") and x.dtype == jnp.float32 else x,
+        crit_state,
+    )
+  except Exception:
+    pass
   crit_sharding = nnx.get_named_sharding(crit_state, _mesh)
   crit_state = jax.tree.map(lambda x, s: jax.device_put(x, s), crit_state, crit_sharding)
   return nnx.merge(crit_graph_def, crit_state)
