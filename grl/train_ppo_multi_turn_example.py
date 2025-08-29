@@ -105,7 +105,8 @@ MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
 CPU_OFFLOAD = False
 
 # Optimizer/scheduler
-LEARNING_RATE = 1e-6
+ACTOR_LR = 1e-6
+CRITIC_LR = 1e-5
 B1 = 0.9
 B2 = 0.999
 WEIGHT_DECAY = 0.01
@@ -339,11 +340,23 @@ metrics_logging_options = metrics_logger.MetricsLoggerOptions(
 # WARMUP_STEPS = 0
 DECAY_STEPS = max(1, int(MAX_STEPS))
 
-# Optimizer, learning rate scheduler, gradient clipping
-optimizer = optax.adamw(
+# Optimizers, learning rate schedulers, gradient clipping (split actor/critic)
+actor_optimizer = optax.adamw(
     learning_rate=optax.schedules.warmup_cosine_decay_schedule(
         init_value=0.0,
-        peak_value=LEARNING_RATE,
+        peak_value=ACTOR_LR,
+        warmup_steps=WARMUP_STEPS,
+        decay_steps=DECAY_STEPS,
+        end_value=0.0,
+    ),
+    b1=B1,
+    b2=B2,
+    weight_decay=WEIGHT_DECAY,
+)
+critic_optimizer = optax.adamw(
+    learning_rate=optax.schedules.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=CRITIC_LR,
         warmup_steps=WARMUP_STEPS,
         decay_steps=DECAY_STEPS,
         end_value=0.0,
@@ -353,9 +366,13 @@ optimizer = optax.adamw(
     weight_decay=WEIGHT_DECAY,
 )
 if MAX_GRAD_NORM is not None:
-  optimizer = optax.chain(
+  actor_optimizer = optax.chain(
       optax.clip_by_global_norm(max_norm=MAX_GRAD_NORM),
-      optimizer,
+      actor_optimizer,
+  )
+  critic_optimizer = optax.chain(
+      optax.clip_by_global_norm(max_norm=MAX_GRAD_NORM),
+      critic_optimizer,
   )
 
 
@@ -370,8 +387,8 @@ cluster_config = rl_cluster_lib.ClusterConfig(
     rollout_engine='vanilla',
     offload_to_cpu=CPU_OFFLOAD,
     training_config=rl_cluster_lib.RLTrainingConfig(
-        actor_optimizer=optimizer,
-        critic_optimizer=optimizer,
+        actor_optimizer=actor_optimizer,
+        critic_optimizer=critic_optimizer,
         eval_every_n_steps=EVAL_EVERY_N_STEPS,
         max_steps=MAX_STEPS,
         gradient_accumulation_steps=1,
