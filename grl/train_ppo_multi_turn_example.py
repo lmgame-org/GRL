@@ -71,21 +71,21 @@ multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
 
 # --- PPO configuration ---
-# PPO hyperparameters used by Tunix PPO
+# PPO hyperparameters used by Tunix PPO (aligned with YAML)
 NUM_PPO_EPOCHS = 1
 MINI_BATCH_SIZE = 4
 GAMMA = 1.0
 GAE_LAMBDA = 1.0
-BETA = 0.001  # Enable KL in reward (aligned with kl_coef)
+BETA = 0.001  # base.yaml algorithm.kl_ctrl.kl_coef when use_kl_in_reward=True
 EPSILON = 0.2
 VF_COEF = 0.1
-CLIP_RANGE_VALUE = 0.5
+CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
 
 # --- Cluster / trainer / rollout configuration ---
 # Sharding (fsdp, tp) — adjust to available devices
 MESH = [(2, 2), ("fsdp", "tp")]
 
-# Rollout (GRPO generation) parameters
+# Rollout (GRPO generation) parameters (aligned with YAML)
 # Max Prompt Length: 4096
 # Max Generation Steps: 400
 MAX_PROMPT_LENGTH = 2048
@@ -407,6 +407,8 @@ cluster_config = rl_cluster_lib.ClusterConfig(
         top_k=TOP_K,
     ),
 )
+
+# todo: add per-mode rollout config for training and evaluation (especially for validation)
 
 ppo_config = PpoConfig(
     num_ppo_epochs=NUM_PPO_EPOCHS,
