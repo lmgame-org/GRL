@@ -73,7 +73,15 @@ multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO (aligned with YAML)
 filter_ratio = 0.25
-TRAINING_BATCH_SIZE = multi_turn_cfg.rollout.agent_group_num * multi_turn_cfg.rollout.agent_group_size * filter_ratio
+# Compute total agents = sum(agent_group_num[i] * agent_group_size[i]) and apply filter_ratio
+try:
+  group_nums = list(multi_turn_cfg.rollout.agent_group_num)
+  group_sizes = list(multi_turn_cfg.rollout.agent_group_size)
+except Exception:
+  group_nums = [int(multi_turn_cfg.rollout.agent_group_num)]
+  group_sizes = [int(multi_turn_cfg.rollout.agent_group_size)]
+total_agents = sum(int(gn) * int(gs) for gn, gs in zip(group_nums, group_sizes))
+TRAINING_BATCH_SIZE = max(1, int(total_agents * float(filter_ratio)))
 NUM_PPO_EPOCHS = 1
 MINI_BATCH_SIZE = 4
 GAMMA = 1.0
@@ -86,7 +94,8 @@ CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
 # --- Cluster / trainer / rollout configuration ---
 # Sharding (fsdp, tp) — adjust to available devices
 MESH = [(2, 2), ("fsdp", "tp")]
-GRADIENT_ACCUMULATION_STEPS = TRAINING_BATCH_SIZE/MINI_BATCH_SIZE
+# Use integer accumulation; at least 1
+GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
 
 # Rollout (GRPO generation) parameters (aligned with YAML)
 # Max Prompt Length: 4096
