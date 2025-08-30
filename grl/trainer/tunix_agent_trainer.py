@@ -258,6 +258,12 @@ class MultiTurnPpoLearner(PpoLearner):
         values,
         jnp.array(0).astype(values.dtype),
     )
+    # Lightweight consistency check (no crash): ensure value targets align with completion length
+    try:
+      if int(values.shape[1]) != int(logits_to_keep):
+        print(f"[warn] values length ({int(values.shape[1])}) != completion length ({int(logits_to_keep)})")
+    except Exception:
+      pass
 
     # ===== Reward computation ======
     # Get rewards from the reward model. Eventual shape: `[B, T]`.
@@ -360,6 +366,13 @@ class MultiTurnPpoLearner(PpoLearner):
       )
       self._actor_metrics_logger.log(
           "kl/mean", per_sequence_mean_kl.mean(), mode, step
+      )
+      # Additional VERL-style names for apples-to-apples comparisons
+      self._actor_metrics_logger.log(
+          "actor/reward_kl_penalty", per_sequence_mean_kl.mean(), mode, step
+      )
+      self._actor_metrics_logger.log(
+          "actor/reward_kl_penalty_coeff", float(self.ppo_config.beta), mode, step
       )
 
     # ─────────────────── MODIFICATION: Log multi-turn metrics in unified logging block ───────────────────
@@ -741,9 +754,14 @@ class MultiTurnPpoLearner(PpoLearner):
         # Sync the train steps with internal trainer, this is based on the
         # assumption that the trainer internally doesn't reset the train steps.
         self._train_steps = self.rl_cluster.actor_trainer.train_steps
-        # ─────────────────── MODIFICATION: Robust eval trigger on crossed intervals ───────────────────
-        # Fire validation once when we cross an eval interval boundary to avoid missing
-        # triggers when the trainer step jumps by multiple mini-batches in a single outer loop.
+        if self.should_sync_weights:
+          with jax.profiler.StepTraceAnnotation(
+              "sync_sampler_weights", step_num=initial_train_steps
+          ):
+            self.rl_cluster.sync_weights()
+        # ─────────────────── MODIFICATION: Robust eval trigger on crossed intervals (after weight sync) ───────────────────
+        # Fire validation once when we cross an eval interval boundary, AFTER syncing sampler weights
+        # so evaluation uses up-to-date rollout parameters.
         try:
           eval_every = self.rl_cluster.cluster_config.training_config.eval_every_n_steps
         except Exception:
@@ -758,11 +776,6 @@ class MultiTurnPpoLearner(PpoLearner):
             self._validate(None)
           self._last_eval_check_step = self._train_steps
         # ─────────────────── END MODIFICATION ───────────────────
-        if self.should_sync_weights:
-          with jax.profiler.StepTraceAnnotation(
-              "sync_sampler_weights", step_num=initial_train_steps
-          ):
-            self.rl_cluster.sync_weights()
         if (
             self._train_steps
             >= self.rl_cluster.cluster_config.training_config.max_steps
