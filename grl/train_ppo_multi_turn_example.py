@@ -95,7 +95,8 @@ CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
 # Sharding (fsdp, tp) — adjust to available devices
 MESH = [(2, 2), ("fsdp", "tp")]
 # Use integer accumulation; at least 1
-GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
+# GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
+GRADIENT_ACCUMULATION_STEPS = 1
 
 # Rollout (GRPO generation) parameters (aligned with YAML)
 # Max Prompt Length: 4096
