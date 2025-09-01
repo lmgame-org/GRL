@@ -221,7 +221,7 @@ class MultiTurnPpoLearner(PpoLearner):
       ref_per_token_logps = jnp.where(
           completion_mask,
           ref_per_token_logps,
-          jnp.array(1).astype(ref_per_token_logps.dtype),
+          jnp.array(0).astype(ref_per_token_logps.dtype),
       )
     else:
       ref_per_token_logps = None
@@ -239,7 +239,7 @@ class MultiTurnPpoLearner(PpoLearner):
     old_per_token_logps = jnp.where(
         completion_mask,
         old_per_token_logps,
-        jnp.array(1).astype(old_per_token_logps.dtype),
+        jnp.array(0).astype(old_per_token_logps.dtype),
     )
 
     # ===== Value computation ======
@@ -319,8 +319,7 @@ class MultiTurnPpoLearner(PpoLearner):
       # )
       # ─────────────────── END MODIFICATION ───────────────────
       kl = old_per_token_logps - ref_per_token_logps
-      kld = completion_mask * kl
-      rewards = rewards - self.ppo_config.beta * kld
+      rewards = rewards - self.ppo_config.beta * kl
 
     # Ensure indices and updates are placed on the same sharding as `rewards` for scatter-add
     batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
@@ -368,7 +367,7 @@ class MultiTurnPpoLearner(PpoLearner):
       # Per TRL: compute per-sequence masked mean KL, then mean across batch
       # Use kld (already zeroed outside mask) for clarity
       per_sequence_mean_kl = ppo_helpers.masked_mean(  # [B]
-          kld, completion_mask, axis=-1  # pylint: disable=undefined-variable
+          kl, completion_mask, axis=-1  # pylint: disable=undefined-variable
       )
       current_kl = per_sequence_mean_kl.mean()  # scalar
       # Log both a generic KL mean and the actor KL penalty metric name
@@ -384,73 +383,6 @@ class MultiTurnPpoLearner(PpoLearner):
     if meta_metrics_dict is not None:
       for name, value in meta_metrics_dict.items():
         self._actor_metrics_logger.log(name, float(value), mode, step)
-    # ─────────────────── END MODIFICATION ───────────────────
-
-    # ─────────────────── MODIFICATION: Descriptive debug printout (apple-to-apple comparison) ───────────────────
-    try:
-      # Toggle via training_config.debug_step_print; default True if missing
-      debug_print = True
-      if debug_print:
-        def _safe_shape(x):
-          try:
-            return tuple(x.shape)
-          except Exception:
-            return None
-
-        shapes_info = {
-          "prompt_ids": _safe_shape(prompt_ids),
-          "completion_ids": _safe_shape(completion_ids),
-          "prompt_mask": _safe_shape(prompt_mask),
-          "completion_mask": _safe_shape(completion_mask),
-          "completion_plus_one_mask": _safe_shape(completion_plus_one_mask),
-          "ref_per_token_logps": _safe_shape(ref_per_token_logps) if ref_per_token_logps is not None else None,
-          "old_per_token_logps": _safe_shape(old_per_token_logps),
-          "values": _safe_shape(values),
-          "advantages": _safe_shape(advantages),
-          "rewards": _safe_shape(rewards),
-        }
-
-        # Gradient accumulation from training config
-        actor_mini = self.ppo_config.mini_batch_size
-        # In this implementation there is no explicit "micro" per-GPU; accumulation is set directly
-        actor_grad_acc = self.grad_acc_steps
-
-        # KL settings
-        use_kl_loss = False  # PPO policy loss here has no explicit KL term
-        kl_in_reward = bool(self.ppo_config.beta != 0.0)
-
-        # Best-effort mean return from rollout meta metrics (if present this step)
-        mean_return = None
-        try:
-          if hasattr(self, "_last_rollout_batch") and self._last_rollout_batch is not None:
-            # Example meta metrics key used earlier
-            pass
-        except Exception:
-          pass
-
-        print("\n=== PPO step summary (train_step={}, bs={}, logits_T={}) ===".format(
-          int(self._train_steps), int(batch_size), int(logits_to_keep)
-        ))
-        print("- Shapes:")
-        for k, v in shapes_info.items():
-          if v is not None:
-            print("  * {:<26}: {}".format(k, v))
-
-        print("- Actor batching:")
-        print("  * ppo_mini_batch_size          = {}".format(actor_mini))
-        print("  * gradient_accumulation_steps  = {}".format(actor_grad_acc))
-
-        print("- Loss construction (per micro-batch):")
-        print("  * policy_loss = PPO(pg_loss)")
-        if kl_in_reward:
-          print("  * reward shaping includes KL penalty (beta > 0)")
-        if use_kl_loss:
-          print("  * + kl_loss term (not used in this PPO path)")
-        print("  * Each micro-batch contributes 1/grad_acc to the accumulated gradients; then optimizer.step() after {} micro-batches".format(actor_grad_acc))
-        print("===============================================================\n")
-    except Exception:
-      # Never break training on debug prints
-      pass
     # ─────────────────── END MODIFICATION ───────────────────
 
     # Log completion lengths.
