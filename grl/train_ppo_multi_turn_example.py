@@ -220,6 +220,24 @@ def build_reference_model_from_ckpt(ckpt_path: str):
   return qwen2_ref, mesh, model_config
 
 
+def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
+  """Create a separate nnx.Module instance with the same parameters and sharding.
+
+  Ensures the returned module is a distinct Python object so optimizer updates on
+  the actor do not affect the frozen reference.
+  """
+  abs_mod: nnx.Module = nnx.eval_shape(lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0)))
+  gdef, _ = nnx.split(abs_mod)
+  src_state = nnx.state(src_module)
+  # Best-effort: ensure arrays are placed on the provided mesh sharding
+  try:
+    target_sharding = nnx.get_named_sharding(src_state, mesh)
+    src_state = jax.tree.map(lambda x, s: jax.device_put(x, s), src_state, target_sharding)
+  except Exception:
+    pass
+  return nnx.merge(gdef, src_state)
+
+
 # 1) Download weights and load base model, then save an intermediate state
 model_config = model.ModelConfig.qwen2_5_0_5_b()
 model_dir = download_model_weights(repo_id, MODEL_CP_PATH)
@@ -232,7 +250,7 @@ gc.collect()
 qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
     os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state")
 )
-policy_qwen2 = qwen2_ref
+policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
 tokenizer = AutoTokenizer.from_pretrained(MODEL_CP_PATH)
 
 
@@ -494,7 +512,7 @@ cluster_config = rl_cluster_lib.ClusterConfig(
             max_tokens_to_generate=TOTAL_GENERATION_STEPS,
             max_prompt_length=MAX_PROMPT_LENGTH,
             kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-            temperature=0.0,
+            temperature=1.0,
             top_p=1.0,
             top_k=None,
         ),

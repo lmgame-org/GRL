@@ -250,6 +250,7 @@ class MultiTurnPpoLearner(PpoLearner):
         pad_id=pad_value,
         eos_id=eos_value,
     )
+
     # `values` start from the last *prompt* token. Shape: `[B, T]`.
     values = values[:, -logits_to_keep - 1 : -1]
     # Set `values` corresponding to padding tokens to 0.
@@ -312,10 +313,14 @@ class MultiTurnPpoLearner(PpoLearner):
       pass
     # ─────────────────── END MODIFICATION ───────────────────
     if self.ppo_config.beta != 0.0:
-      kl = common.compute_kl_divergence(
-          old_per_token_logps, ref_per_token_logps
-      )
-      rewards = rewards - self.ppo_config.beta * kl
+      # ─────────────────── MODIFICATION: Use direct subtraction of log probs instead of KL divergence ───────────────────
+      # kl = common.compute_kl_divergence(
+      #     old_per_token_logps, ref_per_token_logps
+      # )
+      # ─────────────────── END MODIFICATION ───────────────────
+      kl = old_per_token_logps - ref_per_token_logps
+      kld = completion_mask * kl
+      rewards = rewards - self.ppo_config.beta * kld
 
     # Ensure indices and updates are placed on the same sharding as `rewards` for scatter-add
     batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
@@ -360,20 +365,16 @@ class MultiTurnPpoLearner(PpoLearner):
         "reward/min", sequence_rewards.min(), mode, step
     )
     if self.ppo_config.beta != 0.0:
-      # Average of the per-sequence mean KL
-      per_sequence_mean_kl = ppo_helpers.masked_mean(
-          kl, completion_mask, axis=-1  # pylint: disable=undefined-variable
+      # Per TRL: compute per-sequence masked mean KL, then mean across batch
+      # Use kld (already zeroed outside mask) for clarity
+      per_sequence_mean_kl = ppo_helpers.masked_mean(  # [B]
+          kld, completion_mask, axis=-1  # pylint: disable=undefined-variable
       )
-      self._actor_metrics_logger.log(
-          "kl/mean", per_sequence_mean_kl.mean(), mode, step
-      )
-      # Additional VERL-style names for apples-to-apples comparisons
-      self._actor_metrics_logger.log(
-          "actor/reward_kl_penalty", per_sequence_mean_kl.mean(), mode, step
-      )
-      self._actor_metrics_logger.log(
-          "actor/reward_kl_penalty_coeff", float(self.ppo_config.beta), mode, step
-      )
+      current_kl = per_sequence_mean_kl.mean()  # scalar
+      # Log both a generic KL mean and the actor KL penalty metric name
+      self._actor_metrics_logger.log("kl/mean", float(current_kl), mode, step)
+      self._actor_metrics_logger.log("actor/reward_kl_penalty", float(current_kl), mode, step)
+      self._actor_metrics_logger.log("actor/reward_kl_penalty_coeff", float(self.ppo_config.beta), mode, step)
 
     # ─────────────────── MODIFICATION: Log multi-turn metrics in unified logging block ───────────────────
     # Log multi-turn rollout metrics (from filter/meta) in the same block
@@ -699,6 +700,18 @@ class MultiTurnPpoLearner(PpoLearner):
       skip_jit: bool = False,
   ) -> None:
     """PPO training loop."""
+    # ─────────────────── MODIFICATION: Initial validation at step 0 ───────────────────
+    if not hasattr(self, "_initial_eval_done") or not self._initial_eval_done:
+      try:
+        if self.should_sync_weights:
+          with jax.profiler.StepTraceAnnotation("sync_sampler_weights", step_num=0):
+            self.rl_cluster.sync_weights()
+      except Exception:
+        pass
+      print("[VALIDATION] Initial evaluation at train_step=0")
+      self._validate(None)
+      self._initial_eval_done = True
+    # ─────────────────── END MODIFICATION ───────────────────
     train_iterator = iter(train_ds)
     while True:  # loop over M
       try:
