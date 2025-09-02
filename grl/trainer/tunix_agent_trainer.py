@@ -42,6 +42,79 @@ __all__ = [
     "PpoLearner",
 ]
 
+@jax.jit
+def compute_gae_advantages(
+    rewards: jax.Array,
+    values: jax.Array,
+    completion_mask: jax.Array,
+    gamma: float,
+    gae_lambda: float,
+) -> tuple[jax.Array, jax.Array]:
+  """Masked GAE, aligned with TRL-style implementation.
+
+  This version respects variable-length sequences using a mask. After the
+  end-of-sequence (where the mask is 0), the recursion for both the bootstrap
+  value and the advantage accumulator is held constant (no updates).
+
+  Args:
+    rewards: Array of shape [B, T] containing per-token rewards.
+    values: Array of shape [B, T] containing value estimates V(s_t).
+    completion_mask: Boolean or 0/1 mask of shape [B, T]; positions after EOS
+      must be 0.
+    gamma: Discount factor.
+    gae_lambda: GAE lambda parameter.
+
+  Returns:
+    A tuple (advantages, returns), each of shape [B, T].
+  """
+  B, T = rewards.shape
+  mask = completion_mask.astype(values.dtype)
+
+  def scan_step(carry, xs):
+    next_values_carry, last_gae_carry = carry  # each [B]
+    reward_t, value_t, mask_t = xs  # each [B]
+
+    delta_t = reward_t + gamma * next_values_carry - value_t
+    last_gae_unmasked = delta_t + gamma * gae_lambda * last_gae_carry
+
+    # Apply mask gating (hold carries when mask_t == 0)
+    next_values_new = value_t * mask_t + (1.0 - mask_t) * next_values_carry
+    last_gae_new = last_gae_unmasked * mask_t + (1.0 - mask_t) * last_gae_carry
+
+    return (next_values_new, last_gae_new), last_gae_new
+
+  init_carry = (jnp.zeros((B,), dtype=values.dtype), jnp.zeros((B,), dtype=values.dtype))
+  xs = (jnp.transpose(rewards), jnp.transpose(values), jnp.transpose(mask))
+
+  (_, _), advantages_T = jax.lax.scan(
+      scan_step,
+      init=init_carry,
+      xs=xs,
+      reverse=True,
+  )
+
+  advantages = jnp.transpose(advantages_T)
+  returns = advantages + values
+  return advantages, returns
+
+@jax.jit
+def compute_entropy(logits: jax.Array, loss_agg_mode: str = "token-mean") -> jax.Array:
+  """Computes the per-token log probabilities."""
+  prompt_completion_ids, positions, attn_mask = process_ids(
+      prompt_tokens, completion_tokens, pad_id, eos_id
+  )
+  per_token_logps = get_per_token_logps(
+      model,
+      input_tokens=prompt_completion_ids,
+      positions=positions,
+      attn_mask=attn_mask,
+      logits_to_keep=completion_tokens.shape[1],
+  )
+  if stop_gradient:
+    per_token_logps = jax.lax.stop_gradient(per_token_logps)
+  return per_token_logps
+
+
 class MultiTurnPpoLearner(PpoLearner):
   """Wrapper subclass of Tunix PPO PpoLearner.
 
@@ -64,6 +137,7 @@ class MultiTurnPpoLearner(PpoLearner):
         reward_fns=reward_fns,
         data_shuffle_seed=data_shuffle_seed,
     )
+    
 
     
     # ─────────────────── Multi-turn rollout manager ───────────────────
@@ -221,7 +295,7 @@ class MultiTurnPpoLearner(PpoLearner):
       ref_per_token_logps = jnp.where(
           completion_mask,
           ref_per_token_logps,
-          jnp.array(0).astype(ref_per_token_logps.dtype),
+          jnp.array(1).astype(ref_per_token_logps.dtype),
       )
     else:
       ref_per_token_logps = None
@@ -239,7 +313,7 @@ class MultiTurnPpoLearner(PpoLearner):
     old_per_token_logps = jnp.where(
         completion_mask,
         old_per_token_logps,
-        jnp.array(0).astype(old_per_token_logps.dtype),
+        jnp.array(1).astype(old_per_token_logps.dtype),
     )
 
     # ===== Value computation ======
@@ -407,9 +481,16 @@ class MultiTurnPpoLearner(PpoLearner):
     )
 
     # ===== Compute advantages using Generalised Advantage Estimation ======
-    advantages, returns = ppo_helpers.compute_gae_advantages(
+    # advantages, returns = ppo_helpers.compute_gae_advantages(
+    #     rewards=rewards,
+    #     values=values,
+    #     gamma=self.ppo_config.gamma,
+    #     gae_lambda=self.ppo_config.gae_lambda,
+    # )
+    advantages, returns = compute_gae_advantages(
         rewards=rewards,
         values=values,
+        completion_mask=completion_mask,
         gamma=self.ppo_config.gamma,
         gae_lambda=self.ppo_config.gae_lambda,
     )
