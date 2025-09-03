@@ -183,7 +183,7 @@ def ppo_policy_loss_fn(
   per_token_logps = jnp.where(
       completion_mask,
       per_token_logps,
-      jnp.array(1).astype(per_token_logps.dtype),
+      jnp.array(0).astype(per_token_logps.dtype),
   )
 
   advantages = train_example.advantages
@@ -191,12 +191,17 @@ def ppo_policy_loss_fn(
   coef_1 = jnp.exp(per_token_logps - old_per_token_logps)
   coef_2 = jnp.clip(coef_1, 1 - epsilon, 1 + epsilon)
   policy_loss = jnp.maximum(
-      -coef_1 * jnp.expand_dims(advantages, 1),
-      -coef_2 * jnp.expand_dims(advantages, 1),
+      -coef_1 * advantages,
+      -coef_2 * advantages,
   )
   policy_loss = ppo_helpers.masked_mean(policy_loss, completion_mask)
 
   aux = {}
+  # Optional: policy clip fraction diagnostic
+  pg_clipfrac = ppo_helpers.masked_mean(
+      (jnp.abs(coef_1 - 1.0) > epsilon).astype(coef_1.dtype), completion_mask
+  )
+  aux["policy/clipfrac"] = pg_clipfrac
   entropy_coeff = float(train_example.entropy_coeff) if train_example.entropy_coeff is not None else 0.0
   if entropy_coeff > 0.0:
     # Per request: always use token-mean aggregation for entropy
@@ -207,6 +212,67 @@ def ppo_policy_loss_fn(
     aux["entropy/coeff"] = entropy_coeff
 
   return policy_loss, aux
+
+
+def ppo_value_loss_fn(
+    model: nnx.Module,
+    train_example: TrainExample,
+    vf_coef: float,
+    clip_range_value: float | None,
+    pad_id: int,
+    eos_id: int,
+):
+  """Computes the value loss for PPO aligned to response tokens (no extra +1)."""
+
+  prompt_ids = train_example.prompt_ids
+  completion_ids = train_example.completion_ids
+  completion_mask = train_example.completion_mask
+  logits_to_keep = completion_ids.shape[1]
+
+  # Old baseline values and returns (both [B, T])
+  values = train_example.old_values
+  returns = train_example.returns
+
+  # Recompute new values from model and align to response tokens
+  vpreds = common.compute_score(
+      model,
+      prompt_ids,
+      completion_ids,
+      pad_id,
+      eos_id,
+      stop_gradient=False,
+  )
+  vpreds = vpreds[:, -logits_to_keep :]
+  vpreds = jnp.where(
+      completion_mask,
+      vpreds,
+      jnp.array(0).astype(vpreds.dtype),
+  )
+
+  # Clipped value loss (TRL-style)
+  vpred_clipped = jnp.clip(
+      vpreds, values - clip_range_value, values + clip_range_value
+  )
+  vf_losses1 = jnp.square(vpreds - returns)
+  vf_losses2 = jnp.square(vpred_clipped - returns)
+  clipped_vf_losses = jnp.maximum(vf_losses1, vf_losses2)
+
+  # Aggregate; prefer token-mean by default, allow example-config override
+  loss_agg_mode = getattr(train_example, "aggs_mode", "token-mean")
+  vf_loss_agg = agg_loss(
+      loss_mat=clipped_vf_losses,
+      loss_mask=completion_mask,
+      loss_agg_mode=loss_agg_mode,
+  )
+  vf_loss = 0.5 * vf_loss_agg
+
+  # Clip fraction for diagnostics
+  vf_clipfrac = ppo_helpers.masked_mean(
+      (vf_losses2 > vf_losses1).astype(vpreds.dtype), completion_mask
+  )
+
+  aux = {"vf_loss": vf_loss, "vf_clipfrac": vf_clipfrac}
+  return vf_coef * vf_loss, aux
 
 
 class MultiTurnPpoLearner(PpoLearner):
@@ -231,8 +297,9 @@ class MultiTurnPpoLearner(PpoLearner):
         reward_fns=reward_fns,
         data_shuffle_seed=data_shuffle_seed,
     )
-    # Override actor loss with custom PPO policy loss (with optional entropy)
+    # Override actor & critic losses with custom implementations
     self.rl_cluster.actor_trainer.with_loss_fn(ppo_policy_loss_fn, has_aux=True)
+    self.rl_cluster.critic_trainer.with_loss_fn(ppo_value_loss_fn, has_aux=True)
 
     
     # ─────────────────── Multi-turn rollout manager ───────────────────
@@ -386,7 +453,7 @@ class MultiTurnPpoLearner(PpoLearner):
           pad_id=pad_value,
           eos_id=eos_value,
       )
-      # Set log probs to 1 for padding tokens.
+      # Zero-out log probs for padding tokens.
       ref_per_token_logps = jnp.where(
           completion_mask,
           ref_per_token_logps,
@@ -404,7 +471,7 @@ class MultiTurnPpoLearner(PpoLearner):
         prompt_tokens=prompt_ids,
         completion_tokens=completion_ids,
     )
-    # Set log probs to 1 for padding tokens.
+    # Zero-out log probs for padding tokens.
     old_per_token_logps = jnp.where(
         completion_mask,
         old_per_token_logps,
@@ -415,6 +482,7 @@ class MultiTurnPpoLearner(PpoLearner):
 
     # ===== Value computation ======
     # Get values from the value model before model weights are updated.
+    # Align directly to response tokens; completion_ids already equals input_ids[:, 1:].
     values = self.rl_cluster.get_values(
         prompt_tokens=prompt_ids,
         completion_tokens=completion_ids,
@@ -422,11 +490,10 @@ class MultiTurnPpoLearner(PpoLearner):
         eos_id=eos_value,
     )
 
-    # `values` start from the last *prompt* token. Shape: `[B, T]`.
-    values = values[:, -logits_to_keep - 1 : -1]
-    # Set `values` corresponding to padding tokens to 0.
+    # Slice last T and mask with completion_mask
+    values = values[:, -logits_to_keep :]
     values = jnp.where(
-        completion_plus_one_mask,
+        completion_mask,
         values,
         jnp.array(0).astype(values.dtype),
     )
