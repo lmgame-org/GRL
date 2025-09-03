@@ -95,7 +95,7 @@ CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
 MESH = [(2, 2), ("fsdp", "tp")]
 # Use integer accumulation; at least 1
 # GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
-GRADIENT_ACCUMULATION_STEPS = 1
+GRADIENT_ACCUMULATION_STEPS = 8
 
 # Rollout (GRPO generation) parameters (aligned with YAML)
 # Max Prompt Length: 4096
@@ -442,25 +442,13 @@ DECAY_STEPS = max(1, int(MAX_STEPS))
 
 # Optimizers, learning rate schedulers, gradient clipping (split actor/critic)
 actor_optimizer = optax.adamw(
-    learning_rate=optax.schedules.warmup_cosine_decay_schedule(
-        init_value=0.0,
-        peak_value=ACTOR_LR,
-        warmup_steps=WARMUP_STEPS,
-        decay_steps=DECAY_STEPS,
-        end_value=0.0,
-    ),
+    learning_rate=optax.constant_schedule(ACTOR_LR),
     b1=B1,
     b2=B2,
     weight_decay=WEIGHT_DECAY,
 )
 critic_optimizer = optax.adamw(
-    learning_rate=optax.schedules.warmup_cosine_decay_schedule(
-        init_value=0.0,
-        peak_value=CRITIC_LR,
-        warmup_steps=WARMUP_STEPS,
-        decay_steps=DECAY_STEPS,
-        end_value=0.0,
-    ),
+    learning_rate=optax.constant_schedule(CRITIC_LR),
     b1=B1,
     b2=B2,
     weight_decay=WEIGHT_DECAY,
@@ -532,6 +520,9 @@ ppo_config = PpoConfig(
     # ─────────────────── MODIFICATION: enable entropy regularization ───────────────────
     entropy_coeff=0.001,
     aggs_mode="token-mean",
+    clip_ratio_low=0.2,
+    clip_ratio_high=0.28,
+    clip_ratio_c=3.0,
 )
 # RL cluster
 rl_cluster = rl_cluster_lib.RLCluster(

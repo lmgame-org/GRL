@@ -37,12 +37,19 @@ from tunix.rl.ppo.ppo_learner import (
 class TrainExample(BaseTrainExample):
   entropy_coeff: jax.Array | float = flax.struct.field(pytree_node=False, default=0.0)
   aggs_mode: str = flax.struct.field(pytree_node=False, default="token-mean")
+  clip_ratio_low: jax.Array | float = flax.struct.field(pytree_node=False, default=0.2)
+  clip_ratio_high: jax.Array | float = flax.struct.field(pytree_node=False, default=0.2)
+  clip_ratio_c: jax.Array | float | None = flax.struct.field(pytree_node=False, default=None)
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
 class PpoConfig(BasePpoConfig):
   entropy_coeff: float = 0.0
   aggs_mode: str = "token-mean"
+  # VERL-style asymmetric clipping and optional dual-clip
+  clip_ratio_low: float = 0.2
+  clip_ratio_high: float = 0.28
+  clip_ratio_c: float | None = None
 
 _TrainingInputT = Dict[str, List[str] | ArrayLike]
 
@@ -188,18 +195,30 @@ def ppo_policy_loss_fn(
 
   advantages = train_example.advantages
   old_per_token_logps = train_example.old_per_token_logps
-  coef_1 = jnp.exp(per_token_logps - old_per_token_logps)
-  coef_2 = jnp.clip(coef_1, 1 - epsilon, 1 + epsilon)
-  policy_loss = jnp.maximum(
-      -coef_1 * advantages,
-      -coef_2 * advantages,
-  )
-  policy_loss = ppo_helpers.masked_mean(policy_loss, completion_mask)
-
+  ratio = jnp.exp(per_token_logps - old_per_token_logps)
+  # Asymmetric clipping (VERL-style)
+  low  = 1.0 - float(getattr(train_example, "clip_ratio_low",  epsilon))
+  high = 1.0 + float(getattr(train_example, "clip_ratio_high", epsilon))
+  ratio_clipped = jnp.clip(ratio, low, high)
+  # Vanilla clipped loss per token
+  pg_tok = -jnp.minimum(ratio * advantages, ratio_clipped * advantages)
+  
   aux = {}
+  # Optional dual-clip
+  clip_c = getattr(train_example, "clip_ratio_c", None)
+  if clip_c is not None:
+    try:
+      c = float(clip_c)
+      if c > 1.0:
+        pg_tok = jnp.where((advantages < 0) & (ratio > c), -c * advantages, pg_tok)
+        dual_mask = (advantages < 0) & (ratio > c)
+        aux["policy/dualclip_frac"] = ppo_helpers.masked_mean(dual_mask.astype(ratio.dtype), completion_mask)
+    except Exception:
+      pass
+  policy_loss = ppo_helpers.masked_mean(pg_tok, completion_mask)
   # Optional: policy clip fraction diagnostic
   pg_clipfrac = ppo_helpers.masked_mean(
-      (jnp.abs(coef_1 - 1.0) > epsilon).astype(coef_1.dtype), completion_mask
+      ((ratio < low) | (ratio > high)).astype(ratio.dtype), completion_mask
   )
   aux["policy/clipfrac"] = pg_clipfrac
   entropy_coeff = float(train_example.entropy_coeff) if train_example.entropy_coeff is not None else 0.0
@@ -408,13 +427,16 @@ class MultiTurnPpoLearner(PpoLearner):
       completion_mask_local = jnp.array(loss_m)
       prompt_mask_local = (prompt_ids_local != pad_value).astype("int32")
 
-      # EOS index and completion_plus_one_mask like Tunix
+      # EOS index (for terminal reward placement)
       eos_idx_local = jnp.max(common.build_positions_from_mask(completion_mask_local), axis=-1)
-      is_padding_token_local = jnp.any(~completion_mask_local, axis=-1)
-      completion_plus_one_mask_local = completion_mask_local.at[
-          jnp.arange(B)[is_padding_token_local],
-          (eos_idx_local + 1)[is_padding_token_local],
-      ].set(True)
+
+      # ---- build completion_plus_one_mask (t+1 validity) ----
+      T = completion_mask_local.shape[1]
+      # shift mask by one to the right (tokens that have a valid next state)
+      cpm1 = jnp.pad(completion_mask_local[:, 1:], ((0, 0), (0, 1)), constant_values=False)
+      # also mark the position right after EOS as valid (cap at T-1)
+      idx_p1 = jnp.minimum(eos_idx_local + 1, T - 1)
+      cpm1 = cpm1.at[jnp.arange(B), idx_p1].set(True)
 
       return (
         prompt_ids_local,
@@ -422,20 +444,13 @@ class MultiTurnPpoLearner(PpoLearner):
         prompt_mask_local,
         completion_mask_local,
         eos_idx_local,
-        completion_plus_one_mask_local,
+        cpm1,
       )
 
     if self.multi_turn_rollout is None or self._last_rollout_batch is None:
       raise RuntimeError("Multi-turn rollout is not initialized or has no batch; cannot perform full-conversation PPO.")
 
-    (
-      prompt_ids,
-      completion_ids,
-      prompt_mask,
-      completion_mask,
-      eos_idx,
-      completion_plus_one_mask,
-    ) = _convert_rollout_batch_to_tunix_format(
+    (prompt_ids, completion_ids, prompt_mask, completion_mask, eos_idx, completion_plus_one_mask) = _convert_rollout_batch_to_tunix_format(
       self._last_rollout_batch,
       int(max_prompt_length),
     )
@@ -620,6 +635,8 @@ class MultiTurnPpoLearner(PpoLearner):
     if meta_metrics_dict is not None:
       for name, value in meta_metrics_dict.items():
         self._actor_metrics_logger.log(name, float(value), mode, step)
+    if self.ppo_config.entropy_coeff > 0.0:
+      self._actor_metrics_logger.log("entropy/coeff", float(self.ppo_config.entropy_coeff), mode, step)
     # ─────────────────── END MODIFICATION ───────────────────
 
     # Log completion lengths.
@@ -643,6 +660,7 @@ class MultiTurnPpoLearner(PpoLearner):
         step,
     )
 
+
     # ===== Compute advantages using Generalised Advantage Estimation ======
     # advantages, returns = ppo_helpers.compute_gae_advantages(
     #     rewards=rewards,
@@ -665,7 +683,7 @@ class MultiTurnPpoLearner(PpoLearner):
         prompt_mask=prompt_mask,
         completion_ids=completion_ids,
         completion_mask=completion_mask,
-        completion_plus_one_mask=completion_plus_one_mask,
+        completion_plus_one_mask=completion_mask,
         ref_per_token_logps=ref_per_token_logps,
         advantages=advantages,
         returns=returns,
@@ -673,6 +691,9 @@ class MultiTurnPpoLearner(PpoLearner):
         old_values=values,
         entropy_coeff=float(self.ppo_config.entropy_coeff),
         aggs_mode=str(self.ppo_config.aggs_mode),
+        clip_ratio_low=float(self.ppo_config.clip_ratio_low),
+        clip_ratio_high=float(self.ppo_config.clip_ratio_high),
+        clip_ratio_c=self.ppo_config.clip_ratio_c,
     )
 
   def _compute_rewards(
@@ -905,7 +926,7 @@ class MultiTurnPpoLearner(PpoLearner):
             self._prepare_data,
             iterator=train_iterator,
             mini_batch_size=self.ppo_config.mini_batch_size,
-            proceed_num_steps=self.grad_acc_steps,
+            proceed_num_steps=1,
             batch_repeat=self.ppo_config.num_ppo_epochs,
             data_queue=train_data_queue,
             async_loading=self.can_enable_async_rollout,
