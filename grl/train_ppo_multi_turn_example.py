@@ -22,8 +22,7 @@ import optax
 # RL cluster and PPO trainer wrappers
 from tunix.rl import rl_cluster as rl_cluster_lib
 from tunix.rl.rollout import base_rollout
-from tunix.rl.ppo.ppo_learner import PpoConfig
-from grl.trainer.tunix_agent_trainer import MultiTurnPpoLearner
+from grl.trainer.tunix_agent_trainer import PpoConfig, MultiTurnPpoLearner
 from tunix.rl.utils import create_critic_model
 
 # Config and metrics
@@ -530,6 +529,9 @@ ppo_config = PpoConfig(
     epsilon=EPSILON,
     vf_coef=VF_COEF,
     clip_range_value=CLIP_RANGE_VALUE,
+    # ─────────────────── MODIFICATION: enable entropy regularization ───────────────────
+    entropy_coeff=0.001,
+    aggs_mode="token-mean",
 )
 # RL cluster
 rl_cluster = rl_cluster_lib.RLCluster(

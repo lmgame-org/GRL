@@ -23,13 +23,26 @@ from tunix.rl.queue import data_queue as queue_lib
 from tunix.sft import metrics_logger
 from grl.rollout.tunix_sync_multi_turn_rollout import SyncMultiTurnRollout
 import numpy as np
+import jax.nn as jnn
 
 # Re-exported wrappers inherit from Tunix PPO implementations
 from tunix.rl.ppo.ppo_learner import (
-    TrainExample,  # re-export
-    PpoConfig,     # re-export
+    TrainExample as BaseTrainExample,  # re-export base
+    PpoConfig as BasePpoConfig,       # re-export base
     PpoLearner,
 )
+
+# Extend base types with entropy configuration used only by the custom loss
+@flax.struct.dataclass(frozen=True)
+class TrainExample(BaseTrainExample):
+  entropy_coeff: jax.Array | float = flax.struct.field(pytree_node=False, default=0.0)
+  aggs_mode: str = flax.struct.field(pytree_node=False, default="token-mean")
+
+
+@dataclasses.dataclass(slots=True, kw_only=True)
+class PpoConfig(BasePpoConfig):
+  entropy_coeff: float = 0.0
+  aggs_mode: str = "token-mean"
 
 _TrainingInputT = Dict[str, List[str] | ArrayLike]
 
@@ -97,22 +110,103 @@ def compute_gae_advantages(
   returns = advantages + values
   return advantages, returns
 
+# (Entropy helpers removed)
 @jax.jit
-def compute_entropy(logits: jax.Array, loss_agg_mode: str = "token-mean") -> jax.Array:
-  """Computes the per-token log probabilities."""
-  prompt_completion_ids, positions, attn_mask = process_ids(
-      prompt_tokens, completion_tokens, pad_id, eos_id
+def entropy_from_logits(logits: jax.Array) -> jax.Array:
+  """Per-token categorical entropy from logits; shape [..., V] -> [...]."""
+  probs = jnn.softmax(logits, axis=-1)
+  logsumexp = jax.nn.logsumexp(logits, axis=-1)
+  expected_logits = jnp.sum(probs * logits, axis=-1)
+  return logsumexp - expected_logits
+
+
+def agg_loss(
+    loss_mat: jax.Array,
+    loss_mask: jax.Array,
+    loss_agg_mode: str = "token-mean",
+) -> jax.Array:
+  """Aggregate the loss matrix into a scalar.
+
+  Args:
+    loss_mat: [B, T]
+    loss_mask: [B, T]
+    loss_agg_mode: aggregation mode
+  Returns:
+    scalar loss
+  """
+  loss_mask = loss_mask.astype(loss_mat.dtype)
+  if loss_agg_mode == "token-mean":
+    return ppo_helpers.masked_mean(loss_mat, loss_mask)
+  elif loss_agg_mode == "seq-mean-token-sum":
+    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
+    return jnp.mean(seq_losses)
+  elif loss_agg_mode == "seq-mean-token-mean":
+    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
+    seq_denoms = jnp.maximum(jnp.sum(loss_mask, axis=-1), 1)
+    return jnp.mean(seq_losses / seq_denoms)
+  elif loss_agg_mode == "seq-mean-token-sum-norm":
+    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
+    return jnp.sum(seq_losses) / loss_mask.shape[-1]
+  else:
+    raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
+
+
+def ppo_policy_loss_fn(
+    model: nnx.Module,
+    train_example: TrainExample,
+    epsilon: float,
+    pad_id: int,
+    eos_id: int,
+):
+  """Computes PPO policy loss with optional entropy regularization."""
+
+  prompt_ids, completion_ids, completion_mask = (
+      train_example.prompt_ids,
+      train_example.completion_ids,
+      train_example.completion_mask,
   )
-  per_token_logps = get_per_token_logps(
-      model,
-      input_tokens=prompt_completion_ids,
+
+  # Compute per-token log-probs via model forward
+  prompt_completion_ids, positions, attn_mask = common.process_ids(
+      prompt_ids, completion_ids, pad_id, eos_id
+  )
+  logits, _ = model(
+      prompt_completion_ids,
       positions=positions,
-      attn_mask=attn_mask,
-      logits_to_keep=completion_tokens.shape[1],
+      attention_mask=attn_mask,
+      cache=None,
   )
-  if stop_gradient:
-    per_token_logps = jax.lax.stop_gradient(per_token_logps)
-  return per_token_logps
+
+  logits_to_keep = completion_ids.shape[1]
+  logits_slice = logits[:, -logits_to_keep - 1 : -1, :]
+  per_token_logps = common.selective_log_softmax(logits_slice, completion_ids)
+  per_token_logps = jnp.where(
+      completion_mask,
+      per_token_logps,
+      jnp.array(1).astype(per_token_logps.dtype),
+  )
+
+  advantages = train_example.advantages
+  old_per_token_logps = train_example.old_per_token_logps
+  coef_1 = jnp.exp(per_token_logps - old_per_token_logps)
+  coef_2 = jnp.clip(coef_1, 1 - epsilon, 1 + epsilon)
+  policy_loss = jnp.maximum(
+      -coef_1 * jnp.expand_dims(advantages, 1),
+      -coef_2 * jnp.expand_dims(advantages, 1),
+  )
+  policy_loss = ppo_helpers.masked_mean(policy_loss, completion_mask)
+
+  aux = {}
+  entropy_coeff = float(train_example.entropy_coeff) if train_example.entropy_coeff is not None else 0.0
+  if entropy_coeff > 0.0:
+    # Per request: always use token-mean aggregation for entropy
+    token_entropy = entropy_from_logits(logits_slice)
+    entropy_loss = agg_loss(token_entropy, completion_mask, loss_agg_mode="token-mean")
+    policy_loss = policy_loss - (entropy_coeff * entropy_loss)
+    aux["entropy/loss_mean"] = entropy_loss
+    aux["entropy/coeff"] = entropy_coeff
+
+  return policy_loss, aux
 
 
 class MultiTurnPpoLearner(PpoLearner):
@@ -137,7 +231,8 @@ class MultiTurnPpoLearner(PpoLearner):
         reward_fns=reward_fns,
         data_shuffle_seed=data_shuffle_seed,
     )
-    
+    # Override actor loss with custom PPO policy loss (with optional entropy)
+    self.rl_cluster.actor_trainer.with_loss_fn(ppo_policy_loss_fn, has_aux=True)
 
     
     # ─────────────────── Multi-turn rollout manager ───────────────────
@@ -295,7 +390,7 @@ class MultiTurnPpoLearner(PpoLearner):
       ref_per_token_logps = jnp.where(
           completion_mask,
           ref_per_token_logps,
-          jnp.array(1).astype(ref_per_token_logps.dtype),
+          jnp.array(0).astype(ref_per_token_logps.dtype),
       )
     else:
       ref_per_token_logps = None
@@ -313,8 +408,10 @@ class MultiTurnPpoLearner(PpoLearner):
     old_per_token_logps = jnp.where(
         completion_mask,
         old_per_token_logps,
-        jnp.array(1).astype(old_per_token_logps.dtype),
+        jnp.array(0).astype(old_per_token_logps.dtype),
     )
+
+    # (Entropy loss computation removed)
 
     # ===== Value computation ======
     # Get values from the value model before model weights are updated.
@@ -438,16 +535,15 @@ class MultiTurnPpoLearner(PpoLearner):
         "reward/min", sequence_rewards.min(), mode, step
     )
     if self.ppo_config.beta != 0.0:
-      # Per TRL: compute per-sequence masked mean KL, then mean across batch
-      # Use kld (already zeroed outside mask) for clarity
+      # VERL: per-token mean over sequence, then mean over batch (unscaled)
       per_sequence_mean_kl = ppo_helpers.masked_mean(  # [B]
           kl, completion_mask, axis=-1  # pylint: disable=undefined-variable
       )
-      current_kl = per_sequence_mean_kl.mean()  # scalar
-      # Log both a generic KL mean and the actor KL penalty metric name
-      self._actor_metrics_logger.log("kl/mean", float(current_kl), mode, step)
+      current_kl = per_sequence_mean_kl.mean()
       self._actor_metrics_logger.log("actor/reward_kl_penalty", float(current_kl), mode, step)
       self._actor_metrics_logger.log("actor/reward_kl_penalty_coeff", float(self.ppo_config.beta), mode, step)
+
+    # (Entropy metrics removed)
 
     # ─────────────────── MODIFICATION: Log multi-turn metrics in unified logging block ───────────────────
     # Log multi-turn rollout metrics (from filter/meta) in the same block
@@ -496,7 +592,7 @@ class MultiTurnPpoLearner(PpoLearner):
     )
     # Normalize advantages.
     advantages = ppo_helpers.normalize_advantages(advantages, completion_mask)
-
+    
     return TrainExample(
         prompt_ids=prompt_ids,
         prompt_mask=prompt_mask,
@@ -508,6 +604,8 @@ class MultiTurnPpoLearner(PpoLearner):
         returns=returns,
         old_per_token_logps=old_per_token_logps,
         old_values=values,
+        entropy_coeff=float(self.ppo_config.entropy_coeff),
+        aggs_mode=str(self.ppo_config.aggs_mode),
     )
 
   def _compute_rewards(
