@@ -869,6 +869,15 @@ def ppo_policy_loss_fn(
         "loss/entropy": entropy_loss,
         "loss/total": total_loss,
     })
+    # Best-effort visibility: print entropy metrics to stdout since aux isn't
+    # auto-logged by the trainer. This helps verify entropy path execution.
+    try:
+      jax.debug.print(
+        "[PPO/entropy] token_mean={:.6f} loss={:.6f} total={:.6f}",
+        aux["entropy/token_mean"], aux["loss/entropy"], aux["loss/total"],
+      )
+    except Exception:
+      pass
     return total_loss, aux
 
   aux["loss/total"] = policy_loss
