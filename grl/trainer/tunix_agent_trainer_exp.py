@@ -293,6 +293,8 @@ class PpoLearnerExp(PpoLearner):
             pad_value=pad_value,
             max_prompt_length=Pmax,
         )
+        # Ensure float32 mask for stable arithmetic and reductions
+        completion_mask = completion_mask.astype(jnp.float32)
         # ======= End Modificafiont ====
         
         batch_size = completion_ids.shape[0]
