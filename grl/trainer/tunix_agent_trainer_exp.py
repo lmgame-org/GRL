@@ -46,6 +46,10 @@ class PpoConfigExp(PpoConfig):
     # Entropy regularization
     entropy_coeff: float = 0.0
     aggs_mode: str = "token-mean"
+    # ===== MODIFICATION: Asymmetric and dual-clip PPO hyperparameters =====
+    clip_ratio_low: float = 0.2
+    clip_ratio_high: float = 0.2
+    clip_ratio_c: float = 1.0  # >1.0 enables dual-clip; e.g., 3.0
 
 
 @flax.struct.dataclass(frozen=True)
@@ -860,13 +864,14 @@ def ppo_policy_loss_fn(
     pad_id: int,
     eos_id: int,
 ):
-  """Computes the policy loss for PPO.
+  """Computes the policy loss for PPO with asymmetric + dual-clip support.
 
-  ===== MODIFICATION: Broadcasting fix and explicit tokenwise shapes =====
-  - Keep all tokenwise tensors as [B, T].
-  - Remove expand_dims on advantages to avoid accidental [B, B, T] broadcasting.
-  - Compute policy_loss as a masked mean over the [B, T] matrix.
-  - Provide aux with pg_loss (scalar), pg_clipfrac (scalar), and entropy metrics.
+  ===== MODIFICATION: Broadcasting fix + asymmetric and dual-clip PPO =====
+  - Keep all tokenwise tensors [B, T]; remove expand_dims broadcasting.
+  - Asymmetric clipping via clip_ratio_low/high (fallback to epsilon if missing).
+  - Dual-clip PPO via clip_ratio_c when > 1.0 and advantages < 0.
+  - Masked-mean reduction over completion_mask.
+  - Entropy regularization unchanged.
   ===== END MODIFICATION =====
   """
 
@@ -889,22 +894,42 @@ def ppo_policy_loss_fn(
   advantages = train_example.advantages                  # [B, T]
   old_per_token_logps = train_example.old_per_token_logps  # [B, T]
 
-  # Tokenwise coefficients [B, T]
-  coef_1 = jnp.exp(per_token_logps - old_per_token_logps)
-  coef_2 = jnp.clip(coef_1, 1 - epsilon, 1 + epsilon)
+  # ---- NEW: asymmetric clip bounds & dual-clip constant (safe fallbacks)
+  clip_low  = float(getattr(train_example, "clip_ratio_low",  epsilon))
+  clip_high = float(getattr(train_example, "clip_ratio_high", epsilon))
+  clip_c    = float(getattr(train_example, "clip_ratio_c",    0.0))  # ≤1.0 disables dual-clip
+  use_dual_clip = clip_c > 1.0
 
-  # ===== MODIFICATION: remove expand_dims to avoid [B,B,T] broadcasting =====
-  pg_losses1 = -coef_1 * advantages                       # [B, T]
-  pg_losses2 = -coef_2 * advantages                       # [B, T]
-  policy_loss_mat = jnp.maximum(pg_losses1, pg_losses2)   # [B, T]
-  # "token mean" style of normalisation over valid tokens only
-  policy_loss = ppo_helpers.masked_mean(policy_loss_mat, completion_mask)  # scalar
+  # Ratios and clipped ratios [B, T]
+  ratio = jnp.exp(per_token_logps - old_per_token_logps)                   # [B, T]
+  ratio_clipped = jnp.clip(ratio, 1.0 - clip_low, 1.0 + clip_high)         # [B, T]
+
+  # Vanilla PPO per-token losses [B, T]
+  pg_losses1 = -(advantages * ratio)
+  pg_losses2 = -(advantages * ratio_clipped)
+  clip_pg_losses1 = jnp.maximum(pg_losses1, pg_losses2)
+  pg_clipfrac = ppo_helpers.masked_mean((pg_losses2 > pg_losses1).astype(jnp.float32), completion_mask)
+
+  # Dual-clip when advantages < 0
+  if use_dual_clip:
+    pg_losses3 = -(advantages * clip_c)
+    clip_pg_losses2 = jnp.minimum(pg_losses3, clip_pg_losses1)
+    pg_losses = jnp.where(advantages < 0.0, clip_pg_losses2, clip_pg_losses1)
+    pg_clipfrac_lower = ppo_helpers.masked_mean(
+        ((clip_pg_losses1 > pg_losses3) & (advantages < 0.0)).astype(jnp.float32),
+        completion_mask,
+    )
+  else:
+    pg_losses = clip_pg_losses1
+    pg_clipfrac_lower = jnp.array(0.0, dtype=per_token_logps.dtype)
+
+  # Reduce to scalar with token-mean normalization
+  policy_loss = ppo_helpers.masked_mean(pg_losses, completion_mask)
 
   aux = {
       "pg_loss": policy_loss,
-      "pg_clipfrac": ppo_helpers.masked_mean(
-          (pg_losses2 > pg_losses1).astype(jnp.float32), completion_mask
-      ),
+      "pg_clipfrac": pg_clipfrac,
+      "pg_clipfrac_lower": pg_clipfrac_lower,
   }
 
   # Optional entropy regularization from logits

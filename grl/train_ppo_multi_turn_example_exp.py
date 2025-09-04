@@ -518,6 +518,10 @@ ppo_config = PpoConfigExp(
     # Entropy regularization
     entropy_coeff=ENTROPY_COEFF,
     aggs_mode=ENTROPY_AGGS_MODE,
+    # ===== MODIFICATION: Asymmetric + dual-clip PPO hyperparameters =====
+    clip_ratio_low=0.2,
+    clip_ratio_high=0.28,
+    clip_ratio_c=3.0,
 )
 # RL cluster
 rl_cluster = rl_cluster_lib.RLCluster(
