@@ -77,6 +77,19 @@ class PpoLearnerExp(PpoLearner):
             data_shuffle_seed=data_shuffle_seed,
         )
 
+        # ─────────────────── MODIFICATION: attach custom loss fns to trainers ───────────────────
+        # Ensure actor uses experimental policy loss that returns entropy aux metrics
+        try:
+            self.rl_cluster.actor_trainer.with_loss_fn(ppo_policy_loss_fn, has_aux=True)
+        except Exception:
+            pass
+        # Ensure critic uses local value loss
+        try:
+            self.rl_cluster.critic_trainer.with_loss_fn(ppo_value_loss_fn, has_aux=True)
+        except Exception:
+            pass
+        # ─────────────────── END MODIFICATION ───────────────────
+
         # -======== Modiifcation: add multi-turn rollout initialization =====
         # ─────────────────── Multi-turn rollout manager ───────────────────
         # Initialize when config is provided; otherwise remain None (fallback to single-turn)
@@ -313,6 +326,7 @@ class PpoLearnerExp(PpoLearner):
         rewards = jnp.zeros_like(completion_ids)
         rewards = rewards.at[jnp.arange(batch_size), eos_idx].add(last_token_scores)
         if self.ppo_config.beta != 0.0:
+          # ================= MODIFICATION: Configurable KL penalty method aligned with TRL =================
           # Configurable KL penalty method aligned with TRL
           _kl_method = getattr(self.ppo_config, "kl_penalty_method", "k1")
           try:
@@ -326,6 +340,7 @@ class PpoLearnerExp(PpoLearner):
             )
           kl = kl * completion_mask
           rewards = rewards - self.ppo_config.beta * kl
+          # ================= END MODIFICATION =================
 
         # ===== Compute advantages using Generalised Advantage Estimation ======
         advantages, returns = ppo_helpers.compute_gae_advantages(
