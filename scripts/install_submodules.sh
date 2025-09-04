@@ -202,26 +202,58 @@ install_tunix() {
     if [[ "$INSTALL_TUNIX" != 1 ]]; then
         return
     fi
-    
+
     print_step "Installing tunix framework..."
-    
-    # Install tunix from GitHub (no PyPI package available yet)
-    if pip install git+https://github.com/google/tunix; then
-        print_success "tunix installed from GitHub"
-    else
-        # Fallback: install from local submodule if available
-        if [ -d "tunix" ]; then
-            print_step "GitHub install failed, trying local submodule..."
-            cd tunix
-            pip install -e .
-            cd ..
-            print_success "tunix installed from local submodule"
+
+    # Remove any previously installed tunix to avoid path shadowing
+    pip uninstall -y tunix >/dev/null 2>&1 || true
+
+    # ---- Preferred path: local submodule (does not affect caller's CWD) ----
+    if [[ -d "tunix" ]]; then
+        if [[ -f "tunix/pyproject.toml" || -f "tunix/setup.py" ]]; then
+            print_step "Installing tunix from local submodule (editable)"
+            if ( cd tunix && pip install -e . ); then
+                print_success "tunix installed from local submodule"
+                return
+            else
+                print_warning "Local editable install failed; will try .gitmodules URL (if configured)"
+            fi
         else
-            print_error "Failed to install tunix from GitHub and no local submodule found"
-            exit 1
+            print_warning "tunix/ missing build files (pyproject.toml/setup.py); will try .gitmodules URL"
+        fi
+    else
+        print_warning "tunix submodule directory not found; will try .gitmodules URL"
+    fi
+
+    # ---- Fallback: install from .gitmodules URL (if present) ----
+    TUNIX_URL=$(git config --file .gitmodules --get submodule.tunix.url || echo "")
+    TUNIX_BRANCH=$(git config --file .gitmodules --get submodule.tunix.branch || echo "")
+
+    if [[ -n "$TUNIX_URL" ]]; then
+        if [[ -n "$TUNIX_BRANCH" ]]; then
+            print_step "Installing tunix from submodule URL: $TUNIX_URL (branch: $TUNIX_BRANCH)"
+            if pip install "git+$TUNIX_URL@$TUNIX_BRANCH"; then
+                print_success "tunix installed from $TUNIX_URL@$TUNIX_BRANCH"
+                return
+            else
+                print_warning "Failed to install tunix from $TUNIX_URL@$TUNIX_BRANCH"
+            fi
+        else
+            print_step "Installing tunix from submodule URL: $TUNIX_URL"
+            if pip install "git+$TUNIX_URL"; then
+                print_success "tunix installed from $TUNIX_URL"
+                return
+            else
+                print_warning "Failed to install tunix from $TUNIX_URL"
+            fi
         fi
     fi
+
+    # ---- Hard failure if neither local nor URL works ----
+    print_error "Failed to install tunix. Ensure submodule is checked out and has build files (pyproject.toml or setup.py)."
+    exit 1
 }
+
 
 # Install WebShop prerequisites
 install_webshop_prereqs() {

@@ -407,23 +407,11 @@ class MultiTurnPpoLearner(PpoLearner):
       loss_m = np.array(batch.loss_mask).astype(bool)  # [B, L-1]
       B, L = inp.shape
 
-      # Full-conversation split
-      fc_prompt = inp[:, :-1]     # [B, L-1]
-      fc_completion = inp[:, 1:]  # [B, L-1]
-
-      # Left-pad prompt to max_prompt_length with pad_id
-      pad_id = int(self.rl_cluster.rollout.pad_id())
-      if fc_prompt.shape[1] > Pmax:
-        prompt_padded = fc_prompt[:, -Pmax:]
-      else:
-        left_pad = Pmax - fc_prompt.shape[1]
-        prompt_padded = np.concatenate([
-          np.full((B, left_pad), pad_id, dtype=fc_prompt.dtype),
-          fc_prompt
-        ], axis=1)
-
-      prompt_ids_local = jnp.array(prompt_padded)
-      completion_ids_local = jnp.array(fc_completion)
+      # Full-conversation framing
+      # - prompt_ids: the original input_ids (full length L)
+      # - completion_ids: future tokens input_ids[:, 1:] (length L-1)
+      prompt_ids_local = jnp.array(inp)
+      completion_ids_local = jnp.array(inp[:, 1:])
       completion_mask_local = jnp.array(loss_m)
       prompt_mask_local = (prompt_ids_local != pad_value).astype("int32")
 
@@ -533,7 +521,7 @@ class MultiTurnPpoLearner(PpoLearner):
       # the left.
       last_token_scores = scores[
           jnp.arange(batch_size),
-          eos_idx + max_prompt_length,
+          eos_idx + prompt_ids.shape[1],
       ]
     else:
       # ─────────────────── MODIFICATION: Use rollout batch rewards (final column) instead of text-based reward_fns ───────────────────
