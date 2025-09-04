@@ -109,6 +109,7 @@ class PpoLearnerExp(PpoLearner):
                 {
                     "critic/vf_loss": "vf_loss",
                     "critic/vf_clipfrac": "vf_clipfrac",
+                    "critic/vpred_mean": "vpred_mean",
                     "critic/values/min": "values_min",
                     "critic/values/mean": "values_mean",
                     "critic/values/max": "values_max",
@@ -354,8 +355,10 @@ class PpoLearnerExp(PpoLearner):
         # 2. A positive reward is given only at the final timestep, so we add that
         # to the tensor of zeros.
         # 3. Subtract KL divergence from the reward tensor.
-        rewards = jnp.zeros_like(completion_ids)
-        rewards = rewards.at[jnp.arange(batch_size), eos_idx].add(last_token_scores)
+        # Build float rewards tensor to avoid unintended integer quantization
+        rewards = jnp.zeros(completion_ids.shape, dtype=jnp.float32)
+        last_token_scores = jnp.asarray(last_token_scores, dtype=jnp.float32)
+        rewards = rewards.at[jnp.arange(batch_size), eos_idx].set(last_token_scores)
         if self.ppo_config.beta != 0.0:
           # ================= MODIFICATION: Configurable KL penalty method aligned with TRL =================
           # Configurable KL penalty method aligned with TRL
@@ -369,8 +372,8 @@ class PpoLearnerExp(PpoLearner):
             ref_per_token_logps=ref_per_token_logps,
             method=_kl_method,
             )
-          kl = kl * completion_mask
-          rewards = rewards - self.ppo_config.beta * kl
+          kl = jnp.asarray(kl, dtype=jnp.float32)
+          rewards = rewards - self.ppo_config.beta * (kl * completion_mask.astype(jnp.float32))
           # ================= END MODIFICATION =================
 
         # ===== Compute advantages using Generalised Advantage Estimation ======

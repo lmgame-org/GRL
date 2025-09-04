@@ -89,7 +89,7 @@ NUM_PPO_EPOCHS = 1
 MINI_BATCH_SIZE = 4
 GAMMA = 1.0
 GAE_LAMBDA = 1.0
-BETA = 0.001  # base.yaml algorithm.kl_ctrl.kl_coef when use_kl_in_reward=True
+BETA = 0.001 # base.yaml algorithm.kl_ctrl.kl_coef when use_kl_in_reward=True
 EPSILON = 0.2
 VF_COEF = 1.0
 CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
