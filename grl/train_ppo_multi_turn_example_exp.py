@@ -192,12 +192,13 @@ def _print_config_summary():
       return OmegaConf.to_container(cfg, resolve=True)
     except Exception:
       return cfg
-  print("===== Tunix Config (merged) =====")
+  print("===== Tunix Config (base) =====")
   print(_to_dict(tunix_cfg))
-  print("===== Agents Config =====")
-  print(_to_dict(agents_cfg))
-  print("===== Multi-turn (merged) rollout keys =====")
-  print(_to_dict(multi_turn_cfg.rollout))
+  print("===== Multi-turn (composed via defaults in tunix_base.yaml) rollout keys =====")
+  try:
+    print(_to_dict(multi_turn_cfg.rollout))
+  except Exception:
+    print("<no rollout block>")
   print("===== PPO =====")
   print(_to_dict(tunix_cfg.ppo))
   print("===== Training =====")
