@@ -37,6 +37,11 @@ _TrainingInputT = Dict[str, List[str] | ArrayLike]
 
 
 
+def _assert_float32(x, name: str):
+    """Assert that array-like `x` is float32. Converts to jnp.array for robust dtype access."""
+    arr = jnp.asarray(x)
+    assert arr.dtype == jnp.float32, f"{name} dtype must be float32, got {arr.dtype}"
+
 @dataclasses.dataclass(slots=True, kw_only=True)
 class PpoConfigExp(PpoConfig):
     """Subclass of `PpoConfig` for experimental overrides."""
@@ -97,6 +102,10 @@ class PpoLearnerExp(PpoLearner):
                     "actor/pg_loss": "pg_loss",
                     "actor/pg_clipfrac": "pg_clipfrac",
                     "actor/entropy": "entropy",
+                    # Ensure entropy-related metrics are logged when available
+                    "actor/entropy/token_mean": "entropy/token_mean",
+                    "actor/loss/entropy": "loss/entropy",
+                    "actor/loss/total": "loss/total",
                 }
             )
         except Exception:
@@ -312,6 +321,9 @@ class PpoLearnerExp(PpoLearner):
               pad_id=pad_value,
               eos_id=eos_value,
           )
+          # dtype safety
+
+          _assert_float32(ref_per_token_logps, "ref_per_token_logps")
         else:
           ref_per_token_logps = None
 
@@ -324,6 +336,7 @@ class PpoLearnerExp(PpoLearner):
             prompt_tokens=prompt_ids,
             completion_tokens=completion_ids,
         )
+        _assert_float32(old_per_token_logps, "old_per_token_logps")
 
         # ===== Value computation ======
         # Get values from the value model before model weights are updated.
@@ -333,6 +346,7 @@ class PpoLearnerExp(PpoLearner):
             pad_id=pad_value,
             eos_id=eos_value,
         )
+        _assert_float32(values, "values")
         # `values` start from the last *prompt* token. Shape: `[B, T]`.
         values = values[:, -logits_to_keep - 1 : -1]
         values = (values * completion_mask).astype(jnp.float32)
@@ -363,7 +377,9 @@ class PpoLearnerExp(PpoLearner):
         # Build float rewards tensor to avoid unintended integer quantization
         rewards = jnp.zeros(completion_ids.shape, dtype=jnp.float32)
         last_token_scores = jnp.asarray(last_token_scores, dtype=jnp.float32)
+        _assert_float32(last_token_scores, "last_token_scores")
         rewards = rewards.at[jnp.arange(batch_size), eos_idx].set(last_token_scores)
+        _assert_float32(rewards, "rewards")
         if self.ppo_config.beta != 0.0:
           # ================= MODIFICATION: Configurable KL penalty method aligned with TRL =================
           # Configurable KL penalty method aligned with TRL
@@ -377,8 +393,9 @@ class PpoLearnerExp(PpoLearner):
             ref_per_token_logps=ref_per_token_logps,
             method=_kl_method,
             )
-          kl = jnp.asarray(kl, dtype=jnp.float32)
+          _assert_float32(kl, "kl_divergence")
           rewards = rewards - self.ppo_config.beta * (kl * completion_mask.astype(jnp.float32))
+          _assert_float32(rewards, "rewards_after_kl")
           # ================= END MODIFICATION =================
 
         # ===== Compute advantages using Generalised Advantage Estimation ======
@@ -389,6 +406,8 @@ class PpoLearnerExp(PpoLearner):
             gamma=self.ppo_config.gamma,
             gae_lambda=self.ppo_config.gae_lambda,
         )
+        _assert_float32(advantages, "advantages")
+        _assert_float32(returns, "returns")
 
         # ===== Metric logging ======
         step = self._get_metric_logging_steps(mode)
@@ -822,6 +841,9 @@ def ppo_value_loss_fn(
   vpreds = vpreds.astype(jnp.float32)
   values = values.astype(jnp.float32)
   returns = returns.astype(jnp.float32)
+  _assert_float32(vpreds, "critic/vpreds")
+  _assert_float32(values, "critic/old_values")
+  _assert_float32(returns, "critic/returns")
   vpred_clipped = jnp.clip(
       vpreds, values - clip_range_value, values + clip_range_value
   )
@@ -871,7 +893,7 @@ def agg_loss_jax(loss_mat: jax.Array, loss_mask: jax.Array, loss_agg_mode: str =
   else:
     raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
 
-
+# =============================================== MODIFICATION ===============================================
 def ppo_policy_loss_fn(
     model: nnx.Module,
     train_example: TrainExample,
@@ -905,9 +927,15 @@ def ppo_policy_loss_fn(
       eos_id=eos_id,
       stop_gradient=False,
   )
+  # Ensure float32 for numerical stability
+  _assert_float32(per_token_logps, "per_token_logps")
+  _assert_float32(logits_slice, "logits_slice")
 
   advantages = train_example.advantages                  # [B, T]
   old_per_token_logps = train_example.old_per_token_logps  # [B, T]
+  # Force/Assert float32
+  _assert_float32(advantages, "advantages")
+  _assert_float32(old_per_token_logps, "old_per_token_logps")
 
   # ---- NEW: asymmetric clip bounds & dual-clip constant (safe fallbacks)
   clip_low  = float(getattr(train_example, "clip_ratio_low",  epsilon))
@@ -940,6 +968,7 @@ def ppo_policy_loss_fn(
 
   # Reduce to scalar with token-mean normalization
   policy_loss = ppo_helpers.masked_mean(pg_losses, completion_mask)
+  _assert_float32(policy_loss, "policy_loss")
 
   aux = {
       "pg_loss": policy_loss,
@@ -952,8 +981,11 @@ def ppo_policy_loss_fn(
   entropy_agg = str(getattr(train_example, "aggs_mode", "token-mean"))
   if entropy_coef != 0.0:
     token_entropy = entropy_from_logits_jax(logits_slice)  # [B, T]
+    _assert_float32(token_entropy, "token_entropy")
     entropy_loss = agg_loss_jax(token_entropy, completion_mask, entropy_agg)
+    _assert_float32(entropy_loss, "entropy_loss")
     total_loss = policy_loss - entropy_coef * entropy_loss
+    _assert_float32(total_loss, "total_loss")
     aux.update({
         "entropy": ppo_helpers.masked_mean(token_entropy, completion_mask),
         "entropy/token_mean": (jnp.sum(token_entropy * completion_mask) / (jnp.sum(completion_mask) + 1e-8)),
@@ -975,3 +1007,4 @@ def ppo_policy_loss_fn(
   aux["entropy"] = jnp.array(0.0, dtype=policy_loss.dtype)
   return policy_loss, aux
 
+# =============================================== END MODIFICATION ===============================================

@@ -47,7 +47,7 @@ initialise_tracking()
 # ======================= Configuration =======================
 
 # --- Core PPO hyperparameters (centralized) ---
-ENTROPY_COEFF = 0.001
+ENTROPY_COEFF = 0.0
 ENTROPY_AGGS_MODE = "token-mean"
 
 # --- Model artifacts / data ---
@@ -538,7 +538,7 @@ cluster_config = rl_cluster_lib.ClusterConfig(
             max_tokens_to_generate=TOTAL_GENERATION_STEPS,
             max_prompt_length=MAX_PROMPT_LENGTH,
             kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-            temperature=1.0,
+            temperature=0.0,
             top_p=1.0,
             top_k=None,
         ),
