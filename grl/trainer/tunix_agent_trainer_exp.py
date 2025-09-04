@@ -83,9 +83,33 @@ class PpoLearnerExp(PpoLearner):
             self.rl_cluster.actor_trainer.with_loss_fn(ppo_policy_loss_fn, has_aux=True)
         except Exception:
             pass
+        # Log actor metrics from aux
+        try:
+            self.rl_cluster.actor_trainer.with_rl_metrics_to_log(
+                {
+                    "actor/pg_loss": "pg_loss",
+                    "actor/pg_clipfrac": "pg_clipfrac",
+                    "actor/entropy": "entropy",
+                }
+            )
+        except Exception:
+            pass
         # Ensure critic uses local value loss
         try:
             self.rl_cluster.critic_trainer.with_loss_fn(ppo_value_loss_fn, has_aux=True)
+        except Exception:
+            pass
+        # Log critic metrics from aux
+        try:
+            self.rl_cluster.critic_trainer.with_rl_metrics_to_log(
+                {
+                    "critic/vf_loss": "vf_loss",
+                    "critic/vf_clipfrac": "vf_clipfrac",
+                    "critic/values/min": "values_min",
+                    "critic/values/mean": "values_mean",
+                    "critic/values/max": "values_max",
+                }
+            )
         except Exception:
             pass
         # ─────────────────── END MODIFICATION ───────────────────
@@ -143,10 +167,13 @@ class PpoLearnerExp(PpoLearner):
         # loss_m indexes targets for next tokens, so split index in input_ids
         # aligns to the position of that first 1.
         has_one = (loss_m == 1).any(axis=1)
-        first_one = np.where(has_one, (loss_m == 1).argmax(axis=1), L)  # position in loss_m
-        comp_start = first_one  # input index where completion begins
+        # ===== MODIFICATION: Shift boundary by +1 to align completion with first predicted token =====
+        # first_one is in loss_mask space [0..L-2], predicting input_ids[first_one + 1]
+        first_one = np.where(has_one, (loss_m == 1).argmax(axis=1), L - 1)
+        comp_start = np.where(has_one, first_one + 1, L)
         prompt_len = comp_start
         comp_len = L - comp_start
+        # ===== END MODIFICATION =====
 
         # Targets
         target_P = int(max_prompt_length) if int(max_prompt_length) > 0 else int(prompt_len.max()) if B > 0 else 0
@@ -382,8 +409,15 @@ class PpoLearnerExp(PpoLearner):
               kl, completion_mask, axis=-1  # pylint: disable=undefined-variable
           )
           self._actor_metrics_logger.log(
-              "reward_kl_penalty", per_sequence_mean_kl.mean(), mode, step
+              "actor/reward_kl_penalty", per_sequence_mean_kl.mean(), mode, step
           )
+          # Also log KL penalty coefficient (beta)
+          try:
+            self._actor_metrics_logger.log(
+                "actor/reward_kl_penalty_coeff", float(self.ppo_config.beta), mode, step
+            )
+          except Exception:
+            pass
 
         # Log multi-turn rollout metrics (from filter/meta) in the same block
         if mt_metrics_dict is not None:
@@ -781,10 +815,14 @@ def ppo_value_loss_fn(
   vf_loss = 0.5 * vf_loss
 
   aux = {
+      "vf_loss": vf_loss,
       "vpred_mean": ppo_helpers.masked_mean(vpreds, completion_mask),
       "vf_clipfrac": ppo_helpers.masked_mean(
           (vf_losses2 > vf_losses1).astype(jnp.float32), completion_mask
       ),
+      "values_min": jnp.min(vpreds * completion_mask + (1 - completion_mask) * jnp.inf, axis=-1).mean(),
+      "values_mean": ppo_helpers.masked_mean(vpreds, completion_mask),
+      "values_max": jnp.max(vpreds * completion_mask + (1 - completion_mask) * (-jnp.inf), axis=-1).mean(),
   }
   return vf_coef * vf_loss, aux
 
@@ -822,7 +860,15 @@ def ppo_policy_loss_fn(
     pad_id: int,
     eos_id: int,
 ):
-  """Computes the policy loss for PPO."""
+  """Computes the policy loss for PPO.
+
+  ===== MODIFICATION: Broadcasting fix and explicit tokenwise shapes =====
+  - Keep all tokenwise tensors as [B, T].
+  - Remove expand_dims on advantages to avoid accidental [B, B, T] broadcasting.
+  - Compute policy_loss as a masked mean over the [B, T] matrix.
+  - Provide aux with pg_loss (scalar), pg_clipfrac (scalar), and entropy metrics.
+  ===== END MODIFICATION =====
+  """
 
   prompt_ids, completion_ids, completion_mask = (
       train_example.prompt_ids,
@@ -830,7 +876,7 @@ def ppo_policy_loss_fn(
       train_example.completion_mask,
   )
 
-  # Get log probs.
+  # Get log probs (tokenwise [B, T]) and logits slice for entropy.
   per_token_logps, logits_slice = common.compute_per_token_logps_and_logits(
       model,
       prompt_tokens=prompt_ids,
@@ -840,37 +886,41 @@ def ppo_policy_loss_fn(
       stop_gradient=False,
   )
 
-  advantages = train_example.advantages
-  old_per_token_logps = train_example.old_per_token_logps
+  advantages = train_example.advantages                  # [B, T]
+  old_per_token_logps = train_example.old_per_token_logps  # [B, T]
+
+  # Tokenwise coefficients [B, T]
   coef_1 = jnp.exp(per_token_logps - old_per_token_logps)
   coef_2 = jnp.clip(coef_1, 1 - epsilon, 1 + epsilon)
-  pg_losses1 = -coef_1 * jnp.expand_dims(advantages, 1)
-  pg_losses2 = -coef_2 * jnp.expand_dims(advantages, 1)
-  policy_loss = jnp.maximum(pg_losses1, pg_losses2)
 
-  # "token mean" style of normalisation.
-  policy_loss = ppo_helpers.masked_mean(policy_loss, completion_mask)
+  # ===== MODIFICATION: remove expand_dims to avoid [B,B,T] broadcasting =====
+  pg_losses1 = -coef_1 * advantages                       # [B, T]
+  pg_losses2 = -coef_2 * advantages                       # [B, T]
+  policy_loss_mat = jnp.maximum(pg_losses1, pg_losses2)   # [B, T]
+  # "token mean" style of normalisation over valid tokens only
+  policy_loss = ppo_helpers.masked_mean(policy_loss_mat, completion_mask)  # scalar
 
   aux = {
+      "pg_loss": policy_loss,
       "pg_clipfrac": ppo_helpers.masked_mean(
           (pg_losses2 > pg_losses1).astype(jnp.float32), completion_mask
-      )
+      ),
   }
 
   # Optional entropy regularization from logits
   entropy_coef = float(getattr(train_example, "entropy_coeff", 0.0))
   entropy_agg = str(getattr(train_example, "aggs_mode", "token-mean"))
   if entropy_coef != 0.0:
-    token_entropy = entropy_from_logits_jax(logits_slice)
+    token_entropy = entropy_from_logits_jax(logits_slice)  # [B, T]
     entropy_loss = agg_loss_jax(token_entropy, completion_mask, entropy_agg)
     total_loss = policy_loss - entropy_coef * entropy_loss
     aux.update({
+        "entropy": ppo_helpers.masked_mean(token_entropy, completion_mask),
         "entropy/token_mean": (jnp.sum(token_entropy * completion_mask) / (jnp.sum(completion_mask) + 1e-8)),
         "loss/entropy": entropy_loss,
         "loss/total": total_loss,
     })
-    # Best-effort visibility: print entropy metrics to stdout since aux isn't
-    # auto-logged by the trainer. This helps verify entropy path execution.
+    # Best-effort visibility: print entropy metrics to stdout since aux isn't auto-logged by default
     try:
       jax.debug.print(
         "[PPO/entropy] token_mean={:.6f} loss={:.6f} total={:.6f}",
@@ -881,5 +931,7 @@ def ppo_policy_loss_fn(
     return total_loss, aux
 
   aux["loss/total"] = policy_loss
+  # Provide entropy=0 path for consistency when entropy disabled
+  aux["entropy"] = jnp.array(0.0, dtype=policy_loss.dtype)
   return policy_loss, aux
 

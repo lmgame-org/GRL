@@ -373,6 +373,12 @@ class SyncMultiTurnRollout:
               [0,0,0,0,0, 1,1,1,1,1, 1,1,1,1,1]
             loss_mask = loss_mask_full[:-1] (align to next-token targets → L-1=14):
               [0,0,0,0,0, 1,1,1,1,1, 1,1,1,1]
+              
+            response: [1,1,1,1, 2,2,2,2,2, 3,3,3,3,3]
+
+            [0,0,0,0, 0,0,0,0,0, 0,0,0,0,r_last]
+
+
 
             score_tensor (shape [L-1]=14):
             - use_turn_scores = False (accumulate total_r at final step):
@@ -380,7 +386,7 @@ class SyncMultiTurnRollout:
 
             - use_turn_scores = True (per assistant turn; here only the last turn exists):
               place r_last at <|im_end|> (idx 14 in full), then drop first col →
-              [0,0,0,0,0, 0,0,0,0,0, 0,0,0,r_last]
+              [0,0,0,0, 0,0,0,0,0, 0,0,0,0,r_last]
         """
         special_token = self.tokenizer.encode("<|im_start|>")[0]
         turn_starts = torch.where(input_ids == special_token, 1, 0)
