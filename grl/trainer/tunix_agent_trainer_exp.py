@@ -1004,7 +1004,10 @@ def ppo_policy_loss_fn(
 
   aux["loss/total"] = policy_loss
   # Provide entropy=0 path for consistency when entropy disabled
-  aux["entropy"] = jnp.array(0.0, dtype=policy_loss.dtype)
+  zero = jnp.array(0.0, dtype=policy_loss.dtype)
+  aux["loss/entropy"] = zero
+  aux["entropy"] = zero
+  aux["entropy/token_mean"] = zero
   return policy_loss, aux
 
 # =============================================== END MODIFICATION ===============================================

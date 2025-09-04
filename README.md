@@ -27,6 +27,42 @@ GRL (Game Reinforcement Learning) is an open‑source framework that post‑trai
 ## Release
 <strong>[2025/08/13]</strong> We release GRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning.
 
+## Tunix Quick Test
+
+Quickly run an end‑to‑end multi‑turn PPO rollout + training loop with Tunix (Qwen2.5‑0.5B‑Instruct on Sokoban). This uses minimal defaults and logs metrics to W&B.
+
+### 1) Clone and enter repo
+```bash
+git clone --recurse-submodules https://github.com/lmgame-org/GRL.git
+cd GRL
+git checkout -b tunix_integration_dev_test origin/tunix_integration_dev_test
+```
+
+### 2) Create environment
+```bash
+conda create --name grl python=3.11 -y
+conda activate grl
+```
+
+### 3) Install dependencies (Tunix mode)
+```bash
+source scripts/install_submodules.sh --tunix
+pip install -e .
+```
+
+### 4) Set required environment variables
+```bash
+export WANDB_API_KEY=your_wandb_api_key     # or: export WANDB_MODE=disabled
+export WANDB_ENTITY=your_wandb_entity       # e.g., your W&B org/user
+export HF_TOKEN=your_huggingface_token      # needed to download model weights
+```
+
+### 5) Launch the quick test (defaults to Qwen2.5‑0.5B; supports 4 TPU v4 with mesh (2,2))
+```bash
+source train_ppo_multi_turn_script_exp.sh
+```
+
+
 
 ## Installation
 
