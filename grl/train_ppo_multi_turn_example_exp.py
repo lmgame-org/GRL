@@ -46,36 +46,39 @@ initialise_tracking()
 
 # ======================= Configuration =======================
 
+# Load Tunix base config for hyperparameters (relative paths)
+BASE_DIR = Path(__file__).resolve().parents[1]
+tunix_cfg = OmegaConf.load(str(BASE_DIR / "configs" / "tunix_base.yaml"))
+
 # --- Core PPO hyperparameters (centralized) ---
-ENTROPY_COEFF = 0.0
-ENTROPY_AGGS_MODE = "token-mean"
+ENTROPY_COEFF = float(tunix_cfg.ppo.entropy_coeff)
+ENTROPY_AGGS_MODE = str(tunix_cfg.ppo.aggs_mode)
 
 # --- Model artifacts / data ---
-MODEL_CP_PATH = "/home/vanitas/lmgame_projects/GRL/qwen_models"
-repo_id = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL_CP_PATH = str(BASE_DIR / "qwen_models")
+repo_id = str(tunix_cfg.model.repo_id)
 TRAIN_DATA_DIR = None
 TEST_DATA_DIR = None
 TRAIN_FRACTION = 1.0
 
 # --- Agent configuration (OmegaConf) ---
-# Load multi-turn rollout config from configs/base.yaml and configs/agents.yaml
-base_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/base.yaml")
-agents_cfg = OmegaConf.load("/home/vanitas/lmgame_projects/GRL/configs/agents.yaml")
-multi_turn_cfg = OmegaConf.merge(base_cfg, agents_cfg)
+# Combine Tunix base with agents to avoid using base.yaml
+agents_cfg = OmegaConf.load(str(BASE_DIR / "configs" / "agents.yaml"))
+multi_turn_cfg = OmegaConf.merge(tunix_cfg, agents_cfg)
 # Override rollout grouping for quicker testing
 multi_turn_cfg.rollout.agent_group_num = [8]
 multi_turn_cfg.rollout.agent_group_size = [16]
 # Override validation rollout grouping
 # Use only Sokoban for validation (exclude other environments)
 multi_turn_cfg.rollout.validation = ["simpleSokobanAgent"]
-multi_turn_cfg.rollout.validation_agent_group_num = [128]
+multi_turn_cfg.rollout.validation_agent_group_num = [256]
 multi_turn_cfg.rollout.validation_agent_group_size = [1]
 # Limit turns for faster iteration
 # multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
 
 # --- PPO configuration ---
-# PPO hyperparameters used by Tunix PPO (aligned with YAML)
-filter_ratio = 0.25
+# PPO hyperparameters used by Tunix PPO (from YAML)
+filter_ratio = float(multi_turn_cfg.rollout.rollout_filter_ratio)
 # Compute total agents = sum(agent_group_num[i] * agent_group_size[i]) and apply filter_ratio
 try:
   group_nums = list(multi_turn_cfg.rollout.agent_group_num)
@@ -85,60 +88,68 @@ except Exception:
   group_sizes = [int(multi_turn_cfg.rollout.agent_group_size)]
 total_agents = sum(int(gn) * int(gs) for gn, gs in zip(group_nums, group_sizes))
 TRAINING_BATCH_SIZE = max(1, int(total_agents * float(filter_ratio)))
-NUM_PPO_EPOCHS = 1
-MINI_BATCH_SIZE = 4
-GAMMA = 1.0
-GAE_LAMBDA = 1.0
-BETA = 0.0 # base.yaml algorithm.kl_ctrl.kl_coef when use_kl_in_reward=True
-EPSILON = 0.2
-VF_COEF = 1.0
-CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
+NUM_PPO_EPOCHS = int(tunix_cfg.ppo.num_ppo_epochs)
+MINI_BATCH_SIZE = int(tunix_cfg.ppo.mini_batch_size)
+GAMMA = float(tunix_cfg.ppo.gamma)
+GAE_LAMBDA = float(tunix_cfg.ppo.gae_lambda)
+BETA = float(tunix_cfg.ppo.beta)
+EPSILON = float(tunix_cfg.ppo.epsilon)
+VF_COEF = float(tunix_cfg.ppo.vf_coef)
+CLIP_RANGE_VALUE = float(tunix_cfg.ppo.clip_range_value)
 
 # ===== Adjustable PPO clipping hyperparameters (moved to top) =====
-CLIP_RATIO_LOW = 0.2
-CLIP_RATIO_HIGH = 0.28
-CLIP_RATIO_C = 3.0
+CLIP_RATIO_LOW = float(tunix_cfg.ppo.clip_ratio_low)
+CLIP_RATIO_HIGH = float(tunix_cfg.ppo.clip_ratio_high)
+CLIP_RATIO_C = float(tunix_cfg.ppo.clip_ratio_c)
+kl_penalty_method = str(tunix_cfg.ppo.kl_penalty_method)
 
 # --- Cluster / trainer / rollout configuration ---
 # Sharding (fsdp, tp) — adjust to available devices
 MESH = [(2, 2), ("fsdp", "tp")]
 # Use integer accumulation; at least 1
 # GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
-GRADIENT_ACCUMULATION_STEPS = 8
+GRADIENT_ACCUMULATION_STEPS = int(tunix_cfg.training.gradient_accumulation_steps)
 
 # Rollout (GRPO generation) parameters (aligned with YAML)
 # Max Prompt Length: 4096
 # Max Generation Steps: 400
-MAX_PROMPT_LENGTH = 2048
-TOTAL_GENERATION_STEPS =  100
-TEMPERATURE = 1.0
-EVAL_TEMPERATURE = 1.0
-TOP_P = 1.0
-TOP_K = None
+MAX_PROMPT_LENGTH = int(tunix_cfg.rollout_runtime.max_prompt_length)
+TOTAL_GENERATION_STEPS = int(tunix_cfg.rollout_runtime.total_generation_steps)
+TEMPERATURE = float(tunix_cfg.rollout_runtime.temperature_train)
+EVAL_TEMPERATURE = float(tunix_cfg.rollout_runtime.temperature_eval)
+TOP_P = float(tunix_cfg.rollout_runtime.top_p)
+TOP_K = None if tunix_cfg.rollout_runtime.top_k is None else int(tunix_cfg.rollout_runtime.top_k)
 
 # Training loop setup
 NUM_BATCHES = int(200 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
-EVAL_EVERY_N_STEPS = int(10 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
+# Use YAML value if > 0, else fallback
+_ee = int(tunix_cfg.training.eval_every_n_steps)
+EVAL_EVERY_N_STEPS = _ee if _ee and _ee > 0 else int(10 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
 # Debug validation use small batch size
 # NUM_BATCHES = 20
 # EVAL_EVERY_N_STEPS = 10
 NUM_EPOCHS = 1
-MAX_STEPS = int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
+_max_steps_cfg = int(tunix_cfg.training.max_steps)
+MAX_STEPS = _max_steps_cfg if _max_steps_cfg and _max_steps_cfg > 0 else int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
 CPU_OFFLOAD = False
 
 # Optimizer/scheduler
-ACTOR_LR = 1e-6
-CRITIC_LR = 1e-5
-B1 = 0.9
-B2 = 0.999
-WEIGHT_DECAY = 0.01
-MAX_GRAD_NORM = 1.0
+ACTOR_LR = float(tunix_cfg.training.actor_lr)
+CRITIC_LR = float(tunix_cfg.training.critic_lr)
+B1 = float(tunix_cfg.training.b1)
+B2 = float(tunix_cfg.training.b2)
+WEIGHT_DECAY = float(tunix_cfg.training.weight_decay)
+MAX_GRAD_NORM = float(tunix_cfg.training.max_grad_norm)
 
-# Checkpointing
-INTERMEDIATE_CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/intermediate_ckpt/"
-CKPT_DIR = "/home/vanitas/lmgame_projects/GRL/content/ckpts/"
-SAVE_INTERVAL_STEPS = 500
-MAX_TO_KEEP = 1
+# Checkpointing (compose absolute paths from repo root; allow env overrides)
+RUN_ROOT = (BASE_DIR / "content").resolve()
+_default_intermediate = (RUN_ROOT / "intermediate_ckpt").resolve()
+_default_ckpts = (RUN_ROOT / "ckpts").resolve()
+INTERMEDIATE_CKPT_DIR = os.environ.get("GRL_INTERMEDIATE_CKPT_DIR", str(_default_intermediate))
+CKPT_DIR = os.environ.get("GRL_CKPT_DIR", str(_default_ckpts))
+SAVE_INTERVAL_STEPS = int(tunix_cfg.training.save_interval_steps)
+MAX_TO_KEEP = int(tunix_cfg.training.max_to_keep)
+print("Checkpoint dirs:", {"intermediate": INTERMEDIATE_CKPT_DIR, "ckpts": CKPT_DIR})
 
 # Inference presets removed for brevity
 
@@ -168,6 +179,28 @@ def _dummy_reward_fn(prompts, completions, **kwargs):
   # Return zero reward per example; length must match batch size
   batch_size = len(completions) if completions is not None else len(prompts)
   return [0.0] * batch_size
+
+# ======================= Print Config Summary =======================
+def _print_config_summary():
+  def _to_dict(cfg):
+    try:
+      return OmegaConf.to_container(cfg, resolve=True)
+    except Exception:
+      return cfg
+  print("===== Tunix Config (merged) =====")
+  print(_to_dict(tunix_cfg))
+  print("===== Agents Config =====")
+  print(_to_dict(agents_cfg))
+  print("===== Multi-turn (merged) rollout keys =====")
+  print(_to_dict(multi_turn_cfg.rollout))
+  print("===== PPO =====")
+  print(_to_dict(tunix_cfg.ppo))
+  print("===== Training =====")
+  print(_to_dict(tunix_cfg.training))
+  print("===== Rollout Runtime =====")
+  print(_to_dict(tunix_cfg.rollout_runtime))
+
+_print_config_summary()
 
 
 
@@ -264,6 +297,7 @@ policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
 tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
 if tokenizer.pad_token_id is None:
   tokenizer.pad_token = tokenizer.eos_token
+# TODO: Maybe padding issue in trainer
 print("eos_id:", tokenizer.eos_token_id, "pad_id:", tokenizer.pad_token_id)
 
 
@@ -586,6 +620,7 @@ ppo_config = PpoConfigExp(
     clip_ratio_low=CLIP_RATIO_LOW,
     clip_ratio_high=CLIP_RATIO_HIGH,
     clip_ratio_c=CLIP_RATIO_C,
+    kl_penalty_method=kl_penalty_method,
 )
 # RL cluster
 rl_cluster = rl_cluster_lib.RLCluster(
