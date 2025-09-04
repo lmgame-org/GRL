@@ -44,8 +44,8 @@ ppo:
 
 training:
   gradient_accumulation_steps: 8
-  max_steps: 0  # set by script if needed
-  eval_every_n_steps: 0  # set by script if needed
+  max_steps: -1  # set -1 to enable max steps based on previous configs
+  eval_every_n_steps: -1  # set -1 to enable eval every n steps based on previous configs
   actor_lr: 1.0e-6
   critic_lr: 1.0e-5
   b1: 0.9
