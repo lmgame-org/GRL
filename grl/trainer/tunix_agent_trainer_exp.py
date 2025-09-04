@@ -89,6 +89,13 @@ class PpoLearnerExp(PpoLearner):
             data_shuffle_seed=data_shuffle_seed,
         )
 
+        # ===================== MODIFICATION: force-disable reward model usage =====================
+        try:
+            self._use_reward_model = False
+        except Exception:
+            pass
+        # ==========================================================================================
+
         # ─────────────────── MODIFICATION: attach custom loss fns to trainers ───────────────────
         # Ensure actor uses experimental policy loss that returns entropy aux metrics
         try:
