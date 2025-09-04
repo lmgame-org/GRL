@@ -62,19 +62,24 @@ TEST_DATA_DIR = None
 TRAIN_FRACTION = 1.0
 
 # --- Agent configuration (OmegaConf) ---
-# Combine Tunix base with agents to avoid using base.yaml
-agents_cfg = OmegaConf.load(str(BASE_DIR / "configs" / "agents.yaml"))
-multi_turn_cfg = OmegaConf.merge(tunix_cfg, agents_cfg)
-# Override rollout grouping for quicker testing
-multi_turn_cfg.rollout.agent_group_num = [8]
-multi_turn_cfg.rollout.agent_group_size = [16]
-# Override validation rollout grouping
-# Use only Sokoban for validation (exclude other environments)
-multi_turn_cfg.rollout.validation = ["simpleSokobanAgent"]
-multi_turn_cfg.rollout.validation_agent_group_num = [256]
-multi_turn_cfg.rollout.validation_agent_group_size = [1]
-# Limit turns for faster iteration
-# multi_turn_cfg.simpleSokobanAgent.agent_config.max_turns = 3
+# Use Tunix base YAML only as the single source of truth; compose defaults if present
+def _compose_with_defaults(cfg):
+  out = cfg
+  try:
+    df = list(cfg.get("defaults", []))
+  except Exception:
+    df = []
+  for item in df:
+    if item == "agents":
+      agents_path = BASE_DIR / "configs" / "agents.yaml"
+      try:
+        _agents = OmegaConf.load(str(agents_path))
+        out = OmegaConf.merge(out, _agents)
+      except Exception:
+        pass
+  return out
+
+multi_turn_cfg = _compose_with_defaults(tunix_cfg)
 
 # --- PPO configuration ---
 # PPO hyperparameters used by Tunix PPO (from YAML)
