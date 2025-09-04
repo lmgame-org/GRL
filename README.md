@@ -63,6 +63,21 @@ source train_ppo_multi_turn_script_exp.sh
 ```
 
 
+### Adjust training hyperparameters (tunix_base.yaml)
+
+Edit `configs/tunix_base.yaml` to freely tune training without touching code. Key sections:
+
+- rollout: agent grouping, validation set, filtering, reward normalization
+- ppo: PPO knobs (epochs, minibatch, gamma, lambda, entropy, clip ratios, kl method)
+- training: optimizer (lr, betas, weight_decay), grad_accum, eval cadence, checkpointing
+- rollout_runtime: generation length and sampling (temperature, top_p/top_k)
+- model.repo_id: base model to download
+
+Notes:
+- Set `training.max_steps` or `training.eval_every_n_steps` to positive integers to force values; use `-1` to let the script compute defaults.
+- The script composes `tunix_base.yaml` with `configs/agents.yaml` via defaults and prints the merged configuration at startup.
+
+
 
 ## Installation
 

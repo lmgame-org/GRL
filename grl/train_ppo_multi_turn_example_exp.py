@@ -109,8 +109,13 @@ CLIP_RATIO_C = float(tunix_cfg.ppo.clip_ratio_c)
 kl_penalty_method = str(tunix_cfg.ppo.kl_penalty_method)
 
 # --- Cluster / trainer / rollout configuration ---
-# Sharding (fsdp, tp) — adjust to available devices
-MESH = [(2, 2), ("fsdp", "tp")]
+# Sharding (fsdp, tp) — read from YAML, fallback to default
+try:
+  _mesh_shape = tuple(int(x) for x in tunix_cfg.mesh.shape)
+  _mesh_axes = tuple(str(x) for x in tunix_cfg.mesh.axes)
+  MESH = [_mesh_shape, _mesh_axes]
+except Exception:
+  MESH = [(2, 2), ("fsdp", "tp")]
 # Use integer accumulation; at least 1
 # GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
 GRADIENT_ACCUMULATION_STEPS = int(tunix_cfg.training.gradient_accumulation_steps)
@@ -187,24 +192,84 @@ def _dummy_reward_fn(prompts, completions, **kwargs):
 
 # ======================= Print Config Summary =======================
 def _print_config_summary():
-  def _to_dict(cfg):
-    try:
-      return OmegaConf.to_container(cfg, resolve=True)
-    except Exception:
-      return cfg
-  print("===== Tunix Config (base) =====")
-  print(_to_dict(tunix_cfg))
-  print("===== Multi-turn (composed via defaults in tunix_base.yaml) rollout keys =====")
   try:
-    print(_to_dict(multi_turn_cfg.rollout))
+    merged = OmegaConf.to_container(multi_turn_cfg, resolve=True)
   except Exception:
-    print("<no rollout block>")
-  print("===== PPO =====")
-  print(_to_dict(tunix_cfg.ppo))
-  print("===== Training =====")
-  print(_to_dict(tunix_cfg.training))
-  print("===== Rollout Runtime =====")
-  print(_to_dict(tunix_cfg.rollout_runtime))
+    merged = multi_turn_cfg
+  print("===== Multi-turn Config (merged tunix_base.yaml + defaults) =====")
+  print(merged)
+  # Additional concise debug summary for quick inspection
+  try:
+    yaml_cfg = OmegaConf.to_container(tunix_cfg, resolve=True)
+  except Exception:
+    yaml_cfg = tunix_cfg
+  print("===== YAML (tunix_base.yaml) =====")
+  print({
+      'ppo': {
+        'num_ppo_epochs': NUM_PPO_EPOCHS,
+        'mini_batch_size': MINI_BATCH_SIZE,
+        'gamma': GAMMA,
+        'gae_lambda': GAE_LAMBDA,
+        'beta': BETA,
+        'epsilon': EPSILON,
+        'vf_coef': VF_COEF,
+        'clip_range_value': CLIP_RANGE_VALUE,
+        'entropy_coeff': ENTROPY_COEFF,
+        'aggs_mode': ENTROPY_AGGS_MODE,
+        'clip_ratio_low': CLIP_RATIO_LOW,
+        'clip_ratio_high': CLIP_RATIO_HIGH,
+        'clip_ratio_c': CLIP_RATIO_C,
+        'kl_penalty_method': kl_penalty_method,
+      },
+      'training': {
+        'gradient_accumulation_steps': GRADIENT_ACCUMULATION_STEPS,
+        'max_steps': MAX_STEPS,
+        'eval_every_n_steps': EVAL_EVERY_N_STEPS,
+        'actor_lr': ACTOR_LR,
+        'critic_lr': CRITIC_LR,
+        'b1': B1,
+        'b2': B2,
+        'weight_decay': WEIGHT_DECAY,
+        'max_grad_norm': MAX_GRAD_NORM,
+        'save_interval_steps': SAVE_INTERVAL_STEPS,
+        'max_to_keep': MAX_TO_KEEP,
+      },
+      'rollout_runtime': {
+        'max_prompt_length': MAX_PROMPT_LENGTH,
+        'total_generation_steps': TOTAL_GENERATION_STEPS,
+        'temperature_train': TEMPERATURE,
+        'temperature_eval': EVAL_TEMPERATURE,
+        'top_p': TOP_P,
+        'top_k': TOP_K,
+      },
+      'rollout': {
+        'agent_group_num': group_nums,
+        'agent_group_size': group_sizes,
+        'validation_agent_group_num': list(multi_turn_cfg.rollout.validation_agent_group_num) if hasattr(multi_turn_cfg.rollout, 'validation_agent_group_num') else None,
+        'validation_agent_group_size': list(multi_turn_cfg.rollout.validation_agent_group_size) if hasattr(multi_turn_cfg.rollout, 'validation_agent_group_size') else None,
+        'use_turn_scores': bool(multi_turn_cfg.rollout.use_turn_scores),
+        'rollout_filter_ratio': filter_ratio,
+        'rollout_filter_type': str(multi_turn_cfg.rollout.rollout_filter_type),
+        'reward_normalization': {
+          'grouping': str(multi_turn_cfg.rollout.reward_normalization.grouping),
+          'method': str(multi_turn_cfg.rollout.reward_normalization.method),
+        },
+      },
+      'derived': {
+        'total_agents': total_agents,
+        'training_batch_size': TRAINING_BATCH_SIZE,
+        'num_batches': NUM_BATCHES,
+      },
+      'mesh': {
+        'shape': MESH[0],
+        'axes': MESH[1],
+      },
+      'model': { 'repo_id': repo_id },
+      'paths': {
+        'ckpt_dir': CKPT_DIR,
+        'intermediate_ckpt_dir': INTERMEDIATE_CKPT_DIR,
+      }
+  })
 
 _print_config_summary()
 

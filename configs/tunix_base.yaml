@@ -2,6 +2,22 @@ defaults:
   - agents
   - _self_
 
+# ============================================================================
+# How to adjust training hyperparameters
+#
+# Edit this file to control most training behavior:
+# - rollout: agent grouping, validation, filtering, and reward normalization
+# - ppo: PPO algorithm knobs (epochs, minibatch, gamma, lambda, entropy, clips)
+# - training: optimizer, grad accumulation, eval cadence, and checkpointing
+#   NOTE: set max_steps / eval_every_n_steps to -1 to use script defaults,
+#         set a positive integer here to override explicitly.
+# - rollout_runtime: decoding limits and sampling settings for rollout
+# - model.repo_id: base model to download and run
+#
+# The script composes this config with defaults (e.g., agents.yaml) automatically
+# and prints the merged configuration once at startup for transparency.
+# ============================================================================
+
 # ------ Rollout Configuration ------
 rollout:
   agent_group_num: [8]
@@ -54,6 +70,10 @@ training:
   max_grad_norm: 1.0
   save_interval_steps: 500
   max_to_keep: 1
+
+mesh:
+  shape: [2, 2]
+  axes: ["fsdp", "tp"]
 
 rollout_runtime:
   max_prompt_length: 2048
