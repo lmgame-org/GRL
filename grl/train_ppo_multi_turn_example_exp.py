@@ -259,136 +259,177 @@ At this point, we have:
 """
 
 
-"""
-# ===== Helpers: NNX head materialization & replacement =====
-"""
+# """
+# # ===== Helpers: NNX head materialization & replacement =====
+# """
+#
+# def _dict_paths(d, prefix=()):
+#   """Yield (path_tuple, leaf) for nested dict-likes in an NNX state."""
+#   if isinstance(d, dict):
+#     for k, v in d.items():
+#       yield from _dict_paths(v, prefix + (k,))
+#   else:
+#     yield prefix, d
+#
+# def _find_embedding_path(nn_state):
+#   """
+#   Heuristic: find embedding weight (shape ~ [vocab, hidden]) under keys containing
+#   'embed' and 'embedding' (e.g., state['backbone']['embed_tokens']['embedding']).
+#   Returns a tuple path or None.
+#   """
+#   candidates = []
+#   for path, leaf in _dict_paths(nn_state):
+#     if not hasattr(leaf, "shape"):
+#       continue
+#     key_str = "/".join(map(str, path)).lower()
+#     if "embed" in key_str and "embedding" in key_str and len(getattr(leaf, "shape", ())) == 2:
+#       candidates.append((path, leaf.shape))
+#   # prefer the largest vocab dimension
+#   if not candidates:
+#     return None
+#   candidates.sort(key=lambda x: x[1][0], reverse=True)
+#   return candidates[0][0]
+#
+# class Qwen2WithHead(nnx.Module):
+#   """
+#   Minimal wrapper that (1) exposes a real output head and (2) forwards through backbone
+#   with output_hidden_states=True so we can attach heads to the last hidden layer.
+#   """
+#   def __init__(self, backbone: nnx.Module, hidden_dim: int, out_dim: int, rngs: nnx.Rngs):
+#     self.backbone = backbone
+#     self.output_proj = nnx.Linear(in_features=hidden_dim, out_features=out_dim, use_bias=False, rngs=rngs)
+#
+#   def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
+#     _ = self.backbone(
+#       input_tokens,
+#       positions=positions,
+#       cache=cache,
+#       attention_mask=attention_mask,
+#       output_hidden_states=True,
+#       **kwargs,
+#     )
+#     h_all = nnx.pop(self.backbone, nnx.Intermediate)['all_hidden_states'].value
+#     if isinstance(h_all, (list, tuple)):
+#       h = h_all[-1]
+#     else:
+#       h = h_all
+#     return self.output_proj(h)
+#
+# def _materialize_head_from_tied_embedding(backbone_module: nnx.Module, mesh, hidden_dim: int, vocab_size: int):
+#   """
+#   Create Qwen2WithHead(backbone, H→V), initialize kernel with embed^T (de-tie),
+#   and shard to mesh.
+#   """
+#   # Build wrapper
+#   wrapper = Qwen2WithHead(backbone_module, hidden_dim, vocab_size, rngs=nnx.Rngs(params=0))
+#   gdef, state = nnx.split(wrapper)
+#
+#   # Locate embedding in the backbone state
+#   embed_path = _find_embedding_path(state)
+#   if embed_path is None:
+#     print("[critic] WARNING: embedding not found; initializing output head to zeros.")
+#     kernel = jnp.zeros((hidden_dim, vocab_size), dtype=state['output_proj']['kernel'].dtype)
+#   else:
+#     embed = state
+#     for key in embed_path:
+#       embed = embed[key]
+#     # embed is [V, H] -> kernel needs [H, V]
+#     kernel = jnp.asarray(embed.T, dtype=state['output_proj']['kernel'].dtype)
+#
+#   state['output_proj']['kernel'] = kernel
+#
+#   # shard and merge
+#   sharding = nnx.get_named_sharding(state, mesh)
+#   state = jax.tree.map(lambda x, s: jax.device_put(x, s), state, sharding)
+#   return nnx.merge(gdef, state)
+#
+# def _replace_output_head_with_value(critic_with_head: Qwen2WithHead, mesh, hidden_dim: int):
+#   """
+#   True replacement: keep the attribute name `output_proj`, but swap the module shape/type
+#   to Linear(H→1). This mirrors Torch's `model.lm_head = nn.Linear(H,1)`.
+#   """
+#   # Split current module
+#   gdef, st = nnx.split(critic_with_head)
+#
+#   # Replace module attribute at Python level
+#   critic_with_head.output_proj = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=nnx.Rngs(params=0))
+#
+#   # Split again to get the new state tree (with shape [H,1])
+#   gdef2, st2 = nnx.split(critic_with_head)
+#
+#   # Optional: initialize small (or zeros) for stability
+#   st2['output_proj']['kernel'] = jnp.zeros_like(st2['output_proj']['kernel'])
+#
+#   # Shard and merge
+#   shard2 = nnx.get_named_sharding(st2, mesh)
+#   st2 = jax.tree.map(lambda x, s: jax.device_put(x, s), st2, shard2)
+#   return nnx.merge(gdef2, st2)
+#
+# def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
+#   """
+#   Build a critic that replaces the output head (no append):
+#     1) Clone backbone weights from _ref_model into a fresh module.
+#     2) Materialize an untied output head (H→V) and init from tied embedding (embed^T).
+#     3) Replace that head with a value head (H→1).
+#     4) Return the merged/sharded critic module.
+#   """
+#   # 1) Clone the backbone to avoid parameter sharing with policy/ref
+#   abs_mod: nnx.Module = nnx.eval_shape(lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0)))
+#   gdef_abs, _ = nnx.split(abs_mod)
+#   ref_state = nnx.state(_ref_model)
+#   backbone = nnx.merge(gdef_abs, ref_state)
+#
+#   # 2) Materialize an explicit softmax head initialized from embedding^T
+#   hidden_dim = getattr(backbone.config, "embed_dim")
+#   vocab_size = getattr(backbone.config, "vocab_size")
+#   critic_with_head = _materialize_head_from_tied_embedding(backbone, _mesh, hidden_dim, vocab_size)
+#
+#   # 3) True replacement: swap H→V head with a value head H→1
+#   critic_value = _replace_output_head_with_value(critic_with_head, _mesh, hidden_dim)
+#
+#   print("[critic] Built with true head replacement: output_proj Linear(H→1).")
+#   return critic_value
+#
+# critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
-def _dict_paths(d, prefix=()):
-  """Yield (path_tuple, leaf) for nested dict-likes in an NNX state."""
-  if isinstance(d, dict):
-    for k, v in d.items():
-      yield from _dict_paths(v, prefix + (k,))
-  else:
-    yield prefix, d
-
-def _find_embedding_path(nn_state):
-  """
-  Heuristic: find embedding weight (shape ~ [vocab, hidden]) under keys containing
-  'embed' and 'embedding' (e.g., state['backbone']['embed_tokens']['embedding']).
-  Returns a tuple path or None.
-  """
-  candidates = []
-  for path, leaf in _dict_paths(nn_state):
-    if not hasattr(leaf, "shape"):
-      continue
-    key_str = "/".join(map(str, path)).lower()
-    if "embed" in key_str and "embedding" in key_str and len(getattr(leaf, "shape", ())) == 2:
-      candidates.append((path, leaf.shape))
-  # prefer the largest vocab dimension
-  if not candidates:
-    return None
-  candidates.sort(key=lambda x: x[1][0], reverse=True)
-  return candidates[0][0]
-
-class Qwen2WithHead(nnx.Module):
-  """
-  Minimal wrapper that (1) exposes a real output head and (2) forwards through backbone
-  with output_hidden_states=True so we can attach heads to the last hidden layer.
-  """
-  def __init__(self, backbone: nnx.Module, hidden_dim: int, out_dim: int, rngs: nnx.Rngs):
+# Critic model (required for PPO): initialize as a fresh Qwen2 and load
+# the same weights as the reference to start
+class Qwen2CriticWithScoreHead(nnx.Module):
+  def __init__(self, backbone: nnx.Module, rngs: nnx.Rngs):
     self.backbone = backbone
-    self.output_proj = nnx.Linear(in_features=hidden_dim, out_features=out_dim, use_bias=False, rngs=rngs)
+    hidden_dim = getattr(self.backbone.config, 'embed_dim')
+    self.score = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs)
 
   def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
     _ = self.backbone(
-      input_tokens,
-      positions=positions,
-      cache=cache,
-      attention_mask=attention_mask,
-      output_hidden_states=True,
-      **kwargs,
+        input_tokens,
+        positions=positions,
+        cache=cache,
+        attention_mask=attention_mask,
+        output_hidden_states=True,
     )
-    h_all = nnx.pop(self.backbone, nnx.Intermediate)['all_hidden_states'].value
-    if isinstance(h_all, (list, tuple)):
-      h = h_all[-1]
-    else:
-      h = h_all
-    return self.output_proj(h)
-
-def _materialize_head_from_tied_embedding(backbone_module: nnx.Module, mesh, hidden_dim: int, vocab_size: int):
-  """
-  Create Qwen2WithHead(backbone, H→V), initialize kernel with embed^T (de-tie),
-  and shard to mesh.
-  """
-  # Build wrapper
-  wrapper = Qwen2WithHead(backbone_module, hidden_dim, vocab_size, rngs=nnx.Rngs(params=0))
-  gdef, state = nnx.split(wrapper)
-
-  # Locate embedding in the backbone state
-  embed_path = _find_embedding_path(state)
-  if embed_path is None:
-    print("[critic] WARNING: embedding not found; initializing output head to zeros.")
-    kernel = jnp.zeros((hidden_dim, vocab_size), dtype=state['output_proj']['kernel'].dtype)
-  else:
-    embed = state
-    for key in embed_path:
-      embed = embed[key]
-    # embed is [V, H] -> kernel needs [H, V]
-    kernel = jnp.asarray(embed.T, dtype=state['output_proj']['kernel'].dtype)
-
-  state['output_proj']['kernel'] = kernel
-
-  # shard and merge
-  sharding = nnx.get_named_sharding(state, mesh)
-  state = jax.tree.map(lambda x, s: jax.device_put(x, s), state, sharding)
-  return nnx.merge(gdef, state)
-
-def _replace_output_head_with_value(critic_with_head: Qwen2WithHead, mesh, hidden_dim: int):
-  """
-  True replacement: keep the attribute name `output_proj`, but swap the module shape/type
-  to Linear(H→1). This mirrors Torch's `model.lm_head = nn.Linear(H,1)`.
-  """
-  # Split current module
-  gdef, st = nnx.split(critic_with_head)
-
-  # Replace module attribute at Python level
-  critic_with_head.output_proj = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=nnx.Rngs(params=0))
-
-  # Split again to get the new state tree (with shape [H,1])
-  gdef2, st2 = nnx.split(critic_with_head)
-
-  # Optional: initialize small (or zeros) for stability
-  st2['output_proj']['kernel'] = jnp.zeros_like(st2['output_proj']['kernel'])
-
-  # Shard and merge
-  shard2 = nnx.get_named_sharding(st2, mesh)
-  st2 = jax.tree.map(lambda x, s: jax.device_put(x, s), st2, shard2)
-  return nnx.merge(gdef2, st2)
+    hidden = nnx.pop(self.backbone, nnx.Intermediate)['all_hidden_states'].value
+    if isinstance(hidden, (list, tuple)):
+      hidden = hidden[-1]
+    score = self.score(hidden)
+    return score
 
 def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
-  """
-  Build a critic that replaces the output head (no append):
-    1) Clone backbone weights from _ref_model into a fresh module.
-    2) Materialize an untied output head (H→V) and init from tied embedding (embed^T).
-    3) Replace that head with a value head (H→1).
-    4) Return the merged/sharded critic module.
-  """
-  # 1) Clone the backbone to avoid parameter sharing with policy/ref
-  abs_mod: nnx.Module = nnx.eval_shape(lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0)))
-  gdef_abs, _ = nnx.split(abs_mod)
+  """Builds a critic from ref backbone and shards it to the provided mesh."""
+  # Create abstract Qwen2 graph and merge ref weights for the backbone
+  abs_mod: nnx.Module = nnx.eval_shape(
+      lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
+  )
+  graph_def, _ = nnx.split(abs_mod)
   ref_state = nnx.state(_ref_model)
-  backbone = nnx.merge(gdef_abs, ref_state)
+  backbone = nnx.merge(graph_def, ref_state)
+  critic = Qwen2CriticWithScoreHead(backbone, rngs=nnx.Rngs(params=0))
 
-  # 2) Materialize an explicit softmax head initialized from embedding^T
-  hidden_dim = getattr(backbone.config, "embed_dim")
-  vocab_size = getattr(backbone.config, "vocab_size")
-  critic_with_head = _materialize_head_from_tied_embedding(backbone, _mesh, hidden_dim, vocab_size)
-
-  # 3) True replacement: swap H→V head with a value head H→1
-  critic_value = _replace_output_head_with_value(critic_with_head, _mesh, hidden_dim)
-
-  print("[critic] Built with true head replacement: output_proj Linear(H→1).")
-  return critic_value
+  # Shard critic state consistently with the mesh
+  crit_graph_def, crit_state = nnx.split(critic)
+  crit_sharding = nnx.get_named_sharding(crit_state, _mesh)
+  crit_state = jax.tree.map(lambda x, s: jax.device_put(x, s), crit_state, crit_sharding)
+  return nnx.merge(crit_graph_def, crit_state)
 
 critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
