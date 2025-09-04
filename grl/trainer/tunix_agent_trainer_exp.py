@@ -58,6 +58,9 @@ class TrainExampleExp(TrainExample):
 
     entropy_coeff: jax.Array | float = flax.struct.field(pytree_node=False, default=0.0)
     aggs_mode: str = flax.struct.field(pytree_node=False, default="token-mean")
+    clip_ratio_low: jax.Array | float = flax.struct.field(pytree_node=False, default=0.2)
+    clip_ratio_high: jax.Array | float = flax.struct.field(pytree_node=False, default=0.2)
+    clip_ratio_c: jax.Array | float = flax.struct.field(pytree_node=False, default=1.0)
 
 
 class PpoLearnerExp(PpoLearner):
@@ -332,7 +335,7 @@ class PpoLearnerExp(PpoLearner):
         )
         # `values` start from the last *prompt* token. Shape: `[B, T]`.
         values = values[:, -logits_to_keep - 1 : -1]
-        values = values * completion_mask
+        values = (values * completion_mask).astype(jnp.float32)
 
         # ===== Reward computation ======
         # Get rewards from the reward model. Eventual shape: `[B, T]`.
@@ -475,6 +478,9 @@ class PpoLearnerExp(PpoLearner):
             old_values=values,
             entropy_coeff=float(getattr(self.ppo_config, "entropy_coeff", 0.0)),
             aggs_mode=str(getattr(self.ppo_config, "aggs_mode", "token-mean")),
+            clip_ratio_low=float(getattr(self.ppo_config, "clip_ratio_low", 0.2)),
+            clip_ratio_high=float(getattr(self.ppo_config, "clip_ratio_high", 0.2)),
+            clip_ratio_c=float(getattr(self.ppo_config, "clip_ratio_c", 1.0)),
         )
 
     def _compute_rewards(
@@ -812,6 +818,10 @@ def ppo_value_loss_fn(
       stop_gradient=False,
   )
   vpreds = vpreds[:, -logits_to_keep - 1 : -1]
+  # Ensure float32 for stable diff and clipping
+  vpreds = vpreds.astype(jnp.float32)
+  values = values.astype(jnp.float32)
+  returns = returns.astype(jnp.float32)
   vpred_clipped = jnp.clip(
       vpreds, values - clip_range_value, values + clip_range_value
   )

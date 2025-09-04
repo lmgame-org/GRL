@@ -294,42 +294,63 @@ class SyncMultiTurnRollout:
 
     def get_masks_and_scores(self, input_ids: jnp.ndarray, all_scores: List[List[float]] | None = None, use_turn_scores: bool = False):
         """
-        Get loss mask that only learns between <|im_start|>assistant and <|im_end|>. Currently only supports qwen.
-        NOTE: This assumes that the input_ids starts with system and then user & assistant in alternative ways
-        
+        Get loss/response masks and per-token score tensor.
+
+        Implemented with NumPy to avoid JAX slicing/metadata issues on TPU; results
+        are converted back to JAX arrays before returning.
+
         Args:
-            input_ids: jax.Array with shape (bsz, seq_len)
+            input_ids: array-like with shape (bsz, seq_len)
             all_scores: List of score lists for each agent
             use_turn_scores: Whether to use turn-based scores
-            
+
         Returns:
-            Tuple of (loss_mask, score_tensor, response_mask)
+            Tuple of (loss_mask, score_tensor, response_mask) as jax.Arrays
         """
-        special_token = self.tokenizer.encode("<|im_start|>")[0]
-        turn_starts = jnp.where(input_ids == special_token, 1, 0)
-        turn_indicators = jnp.cumsum(turn_starts, axis=-1)
-        response_mask = (turn_indicators % 2 == 1) & (turn_indicators > 1)  # only learns all assistant turns
-        loss_mask = (turn_indicators > 1)  # learns everything after system prompt
+        # Materialize on host with NumPy first
+        np_input_ids = np.asarray(input_ids)
+        bsz, seq_len = np_input_ids.shape
 
-        reward_token = self.tokenizer.encode("<|im_end|>")[0]
-        score_tensor = jnp.zeros(input_ids.shape, dtype=jnp.float32)
-        if all_scores is not None:
+        special_token = int(self.tokenizer.encode("<|im_start|>")[0])
+        reward_token = int(self.tokenizer.encode("<|im_end|>")[0])
+
+        # Turn indicators: increment at every <|im_start|>
+        turn_starts = np.where(np_input_ids == special_token, 1, 0).astype(np.int32)
+        turn_indicators = np.cumsum(turn_starts, axis=-1).astype(np.int32)
+
+        # Masks in NumPy
+        response_mask_np = ((turn_indicators % 2 == 1) & (turn_indicators > 1))
+        loss_mask_np = (turn_indicators > 1)
+
+        # Score tensor in NumPy
+        score_tensor_np = np.zeros((bsz, seq_len), dtype=np.float32)
+        if all_scores is not None and len(all_scores) > 0:
             if use_turn_scores:
-                # Transpose list-of-lists to iterate over turn index
-                for idx, scores_per_turn in enumerate(list(zip(*all_scores))):
-                    scores_arr = jnp.array(scores_per_turn, dtype=jnp.float32)  # shape: [bsz]
-                    turn_indicator = idx * 2 + 3  # 0: pad. 1: system. 2+2n: user. 3+2n: assistant
-                    reward_position = (input_ids == reward_token) & (turn_indicators == turn_indicator)
-                    # Broadcast scores to (bsz, seq_len)
-                    broadcast_scores = jnp.expand_dims(scores_arr, axis=1)
-                    score_tensor = score_tensor + jnp.where(reward_position, broadcast_scores, 0.0)
+                # Per-turn rewards placed at the <|im_end|> of each assistant turn
+                # Transpose list-of-lists to iterate per turn
+                # all_scores: List[ List[float] ] with shape [bsz][num_turns]
+                try:
+                    per_turn_iter = list(zip(*all_scores))
+                except Exception:
+                    per_turn_iter = []
+                for turn_idx, scores_per_turn in enumerate(per_turn_iter):
+                    scores_arr = np.asarray(scores_per_turn, dtype=np.float32).reshape(bsz, 1)
+                    turn_indicator_val = int(turn_idx * 2 + 3)  # 0: pad, 1: system, 2+2n: user, 3+2n: assistant
+                    reward_position = (np_input_ids == reward_token) & (turn_indicators == turn_indicator_val)
+                    score_tensor_np = score_tensor_np + np.where(reward_position, scores_arr, 0.0)
             else:
-                seq_scores = jnp.array([sum(x) for x in all_scores], dtype=jnp.float32)
-                score_tensor = score_tensor.at[:, -1].set(seq_scores)
+                # Accumulate per-sequence reward and place at last token
+                seq_scores = np.asarray([float(sum(x)) for x in all_scores], dtype=np.float32)
+                score_tensor_np[:, -1] = seq_scores
 
-        # Align shapes with loss calculation: remove last from loss_mask, first from scores
-        loss_mask = loss_mask[:, :-1]
-        score_tensor = score_tensor[:, 1:]
+        # Align with loss calculation: target is next-token prediction
+        loss_mask_np = loss_mask_np[:, :-1]
+        score_tensor_np = score_tensor_np[:, 1:]
+
+        # Convert results back to JAX
+        loss_mask = jnp.asarray(loss_mask_np)
+        score_tensor = jnp.asarray(score_tensor_np)
+        response_mask = jnp.asarray(response_mask_np)
 
         return loss_mask, score_tensor, response_mask
 
