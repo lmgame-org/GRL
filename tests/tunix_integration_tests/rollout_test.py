@@ -201,7 +201,13 @@ def test_get_masks_and_scores_alignment():
   # and that score_tensor is a left-truncated version (first column removed)
   # i.e., reward on last token aligns to the last column of score_tensor
   assert jnp.all(score_tensor[:, -1] > 0.0)
-  assert jnp.all(loss_mask[:, -1] == (input_ids[:, -2] != 0))
+
+  # Recompute turn_indicators locally to validate alignment precisely
+  special_token = tok.encode("<|im_start|>")[0]
+  turn_starts = jnp.where(input_ids == special_token, 1, 0)
+  turn_indicators = jnp.cumsum(turn_starts, axis=-1)
+  # After truncation, loss_mask last column corresponds to original index -2
+  assert jnp.all(loss_mask[:, -1] == (turn_indicators[:, -2] > 1))
 
 
 def test_normalize_score_tensor_batch_grouping():
