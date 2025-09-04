@@ -94,6 +94,11 @@ EPSILON = 0.2
 VF_COEF = 1.0
 CLIP_RANGE_VALUE = 0.5  # ppo_trainer.yaml critic.cliprange_value
 
+# ===== Adjustable PPO clipping hyperparameters (moved to top) =====
+CLIP_RATIO_LOW = 0.2
+CLIP_RATIO_HIGH = 0.28
+CLIP_RATIO_C = 3.0
+
 # --- Cluster / trainer / rollout configuration ---
 # Sharding (fsdp, tp) — adjust to available devices
 MESH = [(2, 2), ("fsdp", "tp")]
@@ -107,6 +112,7 @@ GRADIENT_ACCUMULATION_STEPS = 8
 MAX_PROMPT_LENGTH = 2048
 TOTAL_GENERATION_STEPS =  100
 TEMPERATURE = 1.0
+EVAL_TEMPERATURE = 1.0
 TOP_P = 1.0
 TOP_K = None
 
@@ -555,7 +561,7 @@ cluster_config = rl_cluster_lib.ClusterConfig(
             max_tokens_to_generate=TOTAL_GENERATION_STEPS,
             max_prompt_length=MAX_PROMPT_LENGTH,
             kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-            temperature=1.0,
+            temperature=EVAL_TEMPERATURE,
             top_p=1.0,
             top_k=None,
         ),
@@ -577,9 +583,9 @@ ppo_config = PpoConfigExp(
     entropy_coeff=ENTROPY_COEFF,
     aggs_mode=ENTROPY_AGGS_MODE,
     # ===== MODIFICATION: Asymmetric + dual-clip PPO hyperparameters =====
-    clip_ratio_low=0.2,
-    clip_ratio_high=0.28,
-    clip_ratio_c=3.0,
+    clip_ratio_low=CLIP_RATIO_LOW,
+    clip_ratio_high=CLIP_RATIO_HIGH,
+    clip_ratio_c=CLIP_RATIO_C,
 )
 # RL cluster
 rl_cluster = rl_cluster_lib.RLCluster(
