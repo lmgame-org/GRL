@@ -168,11 +168,18 @@ def _dummy_reward_fn(prompts, completions, **kwargs):
 # ======================= Prepare Policy Models & Critic Models =======================
 
 def download_model_weights(repo_id: str, local_dir: str) -> str:
-  """Download model weights to local_dir and return the resolved path."""
+  """Download model weights and tokenizer assets; return the resolved path."""
   downloaded = snapshot_download(
       repo_id=repo_id,
       local_dir=local_dir,
-      allow_patterns=["*.safetensors", "*.json"],
+      allow_patterns=[
+        "*.safetensors",
+        "*.json",
+        "tokenizer.*",
+        "*.model",
+        "vocab*",
+        "merges.txt",
+      ],
   )
   print("Files downloaded to:", downloaded)
   return str(downloaded)
@@ -248,7 +255,10 @@ qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
     os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state")
 )
 policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
-tokenizer = AutoTokenizer.from_pretrained(MODEL_CP_PATH)
+tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+if tokenizer.pad_token_id is None:
+  tokenizer.pad_token = tokenizer.eos_token
+print("eos_id:", tokenizer.eos_token_id, "pad_id:", tokenizer.pad_token_id)
 
 
 """
@@ -432,6 +442,13 @@ def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module
   return nnx.merge(crit_graph_def, crit_state)
 
 critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
+# Zero-initialize critic value head for stable start
+_g_def, _state = nnx.split(critic_qwen2)
+try:
+  _state['score']['kernel'] = jnp.zeros_like(_state['score']['kernel'])
+except Exception:
+  pass
+critic_qwen2 = nnx.merge(_g_def, _state)
 
 
 # ============================== initialize optimizer, rl_cluster, ppo_trainer =======================
@@ -538,7 +555,7 @@ cluster_config = rl_cluster_lib.ClusterConfig(
             max_tokens_to_generate=TOTAL_GENERATION_STEPS,
             max_prompt_length=MAX_PROMPT_LENGTH,
             kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-            temperature=0.0,
+            temperature=1.0,
             top_p=1.0,
             top_k=None,
         ),
@@ -576,7 +593,7 @@ rl_cluster = rl_cluster_lib.RLCluster(
 ppo_trainer = PpoLearnerExp(
     rl_cluster=rl_cluster,
     ppo_config=ppo_config,
-    reward_fns=_dummy_reward_fn,
+    reward_fns=None,
     multi_turn_cfg=multi_turn_cfg,
     multi_turn_processor=None,
     multi_turn_validation=False,
