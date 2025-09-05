@@ -127,9 +127,6 @@ class PpoLearnerExp(PpoLearner):
                     "critic/vf_loss": "vf_loss",
                     "critic/vf_clipfrac": "vf_clipfrac",
                     "critic/vpred_mean": "vpred_mean",
-                    "critic/values/min": "values_min",
-                    "critic/values/mean": "values_mean",
-                    "critic/values/max": "values_max",
                 }
             )
         except Exception:
@@ -282,13 +279,6 @@ class PpoLearnerExp(PpoLearner):
         )
         # Ensure float32 mask for stable arithmetic and reductions
         completion_mask = completion_mask.astype(jnp.float32)
-        # Debug: show count of EOS tokens per sample in completion_ids
-        try:
-            eos_counts = jnp.sum(completion_ids == eos_value, axis=-1)
-            jax.debug.print("[DBG] eos_count_per_sample: {}", eos_counts)
-            jax.debug.print("[DBG] total_eos_in_batch: {}", jnp.sum(eos_counts))
-        except Exception:
-            pass
         # ======= End Modificafiont ====
         
         batch_size = completion_ids.shape[0]
@@ -369,10 +359,6 @@ class PpoLearnerExp(PpoLearner):
           # ================= MODIFICATION: Configurable KL penalty method aligned with TRL =================
           # Configurable KL penalty method aligned with TRL
           _kl_method = getattr(self.ppo_config, "kl_penalty_method", "k1")
-          try:
-            jax.debug.print("[PPO] KL penalty method: {}", _kl_method)
-          except Exception:
-            pass
           kl = common.compute_kl_divergence(
             per_token_logps=old_per_token_logps,
             ref_per_token_logps=ref_per_token_logps,
@@ -397,27 +383,44 @@ class PpoLearnerExp(PpoLearner):
         # ===== Metric logging ======
         step = self._get_metric_logging_steps(mode)
 
+        # ================= MODIFICATION: Log multi-turn rollout metrics (from filter/meta) in the same block =================
+        # Log multi-turn rollout metrics (from filter/meta) in the same block
+        if mt_metrics_dict is not None:
+          try:
+            for name, value in mt_metrics_dict.items():
+              self._actor_metrics_logger.log(name, float(value), mode, step)
+          except Exception:
+            pass
+        if meta_metrics_dict is not None:
+          try:
+            for name, value in meta_metrics_dict.items():
+              self._actor_metrics_logger.log(name, float(value), mode, step)
+          except Exception:
+            pass
+
+        # =============== END MODIFICATION ====================
+
         # Log raw scores from the reward model fn
         self._actor_metrics_logger.log(
-            "score/mean", np.mean(last_token_scores), mode, step
+            "raw_reward/mean", np.mean(last_token_scores), mode, step
         )
         self._actor_metrics_logger.log(
-            "score/max", np.max(last_token_scores), mode, step
+            "raw_reward/max", np.max(last_token_scores), mode, step
         )
         self._actor_metrics_logger.log(
-            "score/min", np.min(last_token_scores), mode, step
+            "raw_reward/min", np.min(last_token_scores), mode, step
         )
 
         # Log final rewards (scores + KL penalty)
         sequence_rewards = rewards.sum(-1)
         self._actor_metrics_logger.log(
-            "reward/mean", np.mean(sequence_rewards), mode, step
+            "final_reward/mean", np.mean(sequence_rewards), mode, step
         )
         self._actor_metrics_logger.log(
-            "reward/max", np.max(sequence_rewards), mode, step
+            "final_reward/max", np.max(sequence_rewards), mode, step
         )
         self._actor_metrics_logger.log(
-            "reward/min", np.min(sequence_rewards), mode, step
+            "final_reward/min", np.min(sequence_rewards), mode, step
         )
         if self.ppo_config.beta != 0.0:
           # Average of the per-sequence mean KL
@@ -434,20 +437,61 @@ class PpoLearnerExp(PpoLearner):
             )
           except Exception:
             pass
+        # ======== Modification: Log old values (pre-update critic values) statistics with masking ========
+        # Log old values (pre-update critic values) statistics with masking
+        try:
+          _min_vals = jnp.min(
+              jnp.where(
+                  completion_mask.astype(bool),
+                  values,
+                  jnp.finfo(values.dtype).max,
+              ),
+              axis=-1,
+          ).mean()
+          _max_vals = jnp.max(
+              jnp.where(
+                  completion_mask.astype(bool),
+                  values,
+                  -jnp.finfo(values.dtype).max,
+              ),
+              axis=-1,
+          ).mean()
+          _mean_vals = ppo_helpers.masked_mean(values, completion_mask)
+          self._actor_metrics_logger.log("old_values/mean", float(_mean_vals), mode, step)
+          self._actor_metrics_logger.log("old_values/min", float(_min_vals), mode, step)
+          self._actor_metrics_logger.log("old_values/max", float(_max_vals), mode, step)
+        except Exception:
+          pass
 
-        # Log multi-turn rollout metrics (from filter/meta) in the same block
-        if mt_metrics_dict is not None:
-          try:
-            for name, value in mt_metrics_dict.items():
-              self._actor_metrics_logger.log(name, float(value), mode, step)
-          except Exception:
-            pass
-        if meta_metrics_dict is not None:
-          try:
-            for name, value in meta_metrics_dict.items():
-              self._actor_metrics_logger.log(name, float(value), mode, step)
-          except Exception:
-            pass
+        # Log advantages and returns (masked)
+        try:
+          _adv_mean = ppo_helpers.masked_mean(advantages, completion_mask)
+          _ret_mean = ppo_helpers.masked_mean(returns, completion_mask)
+          _adv_min = jnp.min(
+              jnp.where(completion_mask.astype(bool), advantages, jnp.finfo(advantages.dtype).max),
+              axis=-1,
+          ).mean()
+          _adv_max = jnp.max(
+              jnp.where(completion_mask.astype(bool), advantages, -jnp.finfo(advantages.dtype).max),
+              axis=-1,
+          ).mean()
+          _ret_min = jnp.min(
+              jnp.where(completion_mask.astype(bool), returns, jnp.finfo(returns.dtype).max),
+              axis=-1,
+          ).mean()
+          _ret_max = jnp.max(
+              jnp.where(completion_mask.astype(bool), returns, -jnp.finfo(returns.dtype).max),
+              axis=-1,
+          ).mean()
+          self._actor_metrics_logger.log("advantages/mean", float(_adv_mean), mode, step)
+          self._actor_metrics_logger.log("advantages/min", float(_adv_min), mode, step)
+          self._actor_metrics_logger.log("advantages/max", float(_adv_max), mode, step)
+          self._actor_metrics_logger.log("returns/mean", float(_ret_mean), mode, step)
+          self._actor_metrics_logger.log("returns/min", float(_ret_min), mode, step)
+          self._actor_metrics_logger.log("returns/max", float(_ret_max), mode, step)
+        except Exception:
+          pass
+        # ======== END MODIFICATION =================
 
         # Log completion lengths.
         agg_completion_mask = completion_mask.sum(axis=-1)
@@ -847,15 +891,6 @@ def ppo_value_loss_fn(
       "vf_clipfrac": ppo_helpers.masked_mean(
           (vf_losses2 > vf_losses1).astype(jnp.float32), completion_mask
       ),
-      "values_min": jnp.min(
-          jnp.where(completion_mask.astype(bool), vpreds, jnp.finfo(vpreds.dtype).max),
-          axis=-1,
-      ).mean(),
-      "values_mean": ppo_helpers.masked_mean(vpreds, completion_mask),
-      "values_max": jnp.max(
-          jnp.where(completion_mask.astype(bool), vpreds, -jnp.finfo(vpreds.dtype).max),
-          axis=-1,
-      ).mean(),
   }
   return vf_coef * vf_loss, aux
 
@@ -984,14 +1019,7 @@ def ppo_policy_loss_fn(
         "loss/entropy": entropy_loss,
         "loss/total": total_loss,
     })
-    # Best-effort visibility: print entropy metrics to stdout since aux isn't auto-logged by default
-    try:
-      jax.debug.print(
-        "[PPO/entropy] entropy={:.6f} loss={:.6f} total={:.6f}",
-        aux["entropy"], aux["loss/entropy"], aux["loss/total"],
-      )
-    except Exception:
-      pass
+
     return total_loss, aux
 
   aux["loss/total"] = policy_loss

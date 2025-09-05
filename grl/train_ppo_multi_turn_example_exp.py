@@ -513,53 +513,52 @@ At this point, we have:
 #
 # critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
-# Critic model (required for PPO): initialize as a fresh Qwen2 and load
-# the same weights as the reference to start
-class Qwen2CriticWithScoreHead(nnx.Module):
+# --- Critic: simple Linear(H->1) head (no bias) ---
+class Qwen2CriticTokenClass(nnx.Module):
   def __init__(self, backbone: nnx.Module, rngs: nnx.Rngs):
     self.backbone = backbone
-    hidden_dim = getattr(self.backbone.config, 'embed_dim')
-    self.score = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs)
+    hidden_dim = getattr(self.backbone.config, "hidden_size", getattr(self.backbone.config, "embed_dim"))
+    self.classifier = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs)
 
   def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
     _ = self.backbone(
-        input_tokens,
-        positions=positions,
-        cache=cache,
-        attention_mask=attention_mask,
-        output_hidden_states=True,
+      input_tokens,
+      positions=positions,
+      cache=cache,
+      attention_mask=attention_mask,
+      output_hidden_states=True,
+      **kwargs,
     )
-    hidden = nnx.pop(self.backbone, nnx.Intermediate)['all_hidden_states'].value
-    if isinstance(hidden, (list, tuple)):
-      hidden = hidden[-1]
-    score = self.score(hidden)
-    return score
+    h = nnx.pop(self.backbone, nnx.Intermediate)["all_hidden_states"].value
+    if isinstance(h, (list, tuple)):
+      h = h[-1]
+    return self.classifier(h)
 
 def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
   """Builds a critic from ref backbone and shards it to the provided mesh."""
-  # Create abstract Qwen2 graph and merge ref weights for the backbone
   abs_mod: nnx.Module = nnx.eval_shape(
       lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
   )
   graph_def, _ = nnx.split(abs_mod)
   ref_state = nnx.state(_ref_model)
   backbone = nnx.merge(graph_def, ref_state)
-  critic = Qwen2CriticWithScoreHead(backbone, rngs=nnx.Rngs(params=0))
 
-  # Shard critic state consistently with the mesh
+  critic = Qwen2CriticTokenClass(backbone, rngs=nnx.Rngs(params=0))
   crit_graph_def, crit_state = nnx.split(critic)
+
+  # Initialization: small normal for weights (seeded)
+  seed = 123
+  key = jax.random.PRNGKey(seed)
+  kshape = crit_state["classifier"]["kernel"].shape
+  kdtype = crit_state["classifier"]["kernel"].dtype
+  crit_state["classifier"]["kernel"] = jax.random.normal(key, kshape, dtype=kdtype) * 0.02
+
+  # Shard once at the end
   crit_sharding = nnx.get_named_sharding(crit_state, _mesh)
   crit_state = jax.tree.map(lambda x, s: jax.device_put(x, s), crit_state, crit_sharding)
   return nnx.merge(crit_graph_def, crit_state)
 
 critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
-# Zero-initialize critic value head for stable start
-_g_def, _state = nnx.split(critic_qwen2)
-try:
-  _state['score']['kernel'] = jnp.zeros_like(_state['score']['kernel'])
-except Exception:
-  pass
-critic_qwen2 = nnx.merge(_g_def, _state)
 
 
 # ============================== initialize optimizer, rl_cluster, ppo_trainer =======================
