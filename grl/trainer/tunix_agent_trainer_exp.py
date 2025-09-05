@@ -109,8 +109,6 @@ class PpoLearnerExp(PpoLearner):
                     "actor/pg_loss": "pg_loss",
                     "actor/pg_clipfrac": "pg_clipfrac",
                     "actor/entropy": "entropy",
-                    # Ensure entropy-related metrics are logged when available
-                    "actor/entropy/token_mean": "entropy/token_mean",
                     "actor/loss/entropy": "loss/entropy",
                     "actor/loss/total": "loss/total",
                 }
@@ -177,64 +175,34 @@ class PpoLearnerExp(PpoLearner):
         """Convert a multi-turn rollout batch to JAX tensors for PPO.
 
         Splitting rule:
-        - loss_mask 0 -> prompt tokens (prefix of zeros)
-        - loss_mask 1 -> completion tokens (suffix starting at first 1)
-        - prompt is left-padded to max_prompt_length
-        - completion_mask is all 1s for the completion length
-        - eos_idx is the index of the final completion token (end of completions)
+        - Fixed prompt length Pmax=1: prompt is the first token only
+        - completion_ids are all tokens after the first token
+        - completion_mask is the provided loss_mask
+        - eos_idx is derived from completion_mask
         """
         inp = np.array(batch.input_ids)  # [B, L]
         loss_m = np.array(batch.loss_mask)  # [B, L-1], values in {0,1}
         B, L = inp.shape
 
-        # Determine split point where completions start: first 1 in loss_m
-        # loss_m indexes targets for next tokens, so split index in input_ids
-        # aligns to the position of that first 1.
-        has_one = (loss_m == 1).any(axis=1)
-        # ===== MODIFICATION: Shift boundary by +1 to align completion with first predicted token =====
-        # first_one is in loss_mask space [0..L-2], predicting input_ids[first_one + 1]
-        first_one = np.where(has_one, (loss_m == 1).argmax(axis=1), L - 1)
-        comp_start = np.where(has_one, first_one + 1, L)
-        prompt_len = comp_start
-        comp_len = L - comp_start
-        # ===== END MODIFICATION =====
-
-        # Targets
-        target_P = int(max_prompt_length) if int(max_prompt_length) > 0 else int(prompt_len.max()) if B > 0 else 0
-        max_comp_len = int(comp_len.max()) if B > 0 else 0
-
-        prompt_ids_arr = np.full((B, target_P), pad_value, dtype=inp.dtype)
-        completion_ids_arr = np.full((B, max_comp_len if max_comp_len > 0 else 1), pad_value, dtype=inp.dtype)
-        completion_mask_arr = np.zeros_like(completion_ids_arr, dtype=np.int32)
-        eos_idx_arr = np.zeros((B,), dtype=np.int32)
-
-        for i in range(B):
-            p_len = int(prompt_len[i])
-            c_len = int(comp_len[i])
-            # Fill prompt tokens (left-padded to target_P)
-            p_tokens = inp[i, :p_len]
-            if p_tokens.shape[0] > target_P:
-                p_tokens = p_tokens[-target_P:]
-            prompt_ids_arr[i, -p_tokens.shape[0] :] = p_tokens
-
-            # Fill completion tokens (all unmasked targets; mask all ones)
-            if c_len > 0:
-                c_tokens = inp[i, int(comp_start[i]) : int(comp_start[i]) + c_len]
-                completion_ids_arr[i, : c_tokens.shape[0]] = c_tokens
-                completion_mask_arr[i, : c_tokens.shape[0]] = 1
-                eos_idx_arr[i] = c_tokens.shape[0] - 1  # end of completions
-            else:
-                eos_idx_arr[i] = 0
-
-        prompt_ids = jnp.array(prompt_ids_arr)
-        completion_ids = jnp.array(completion_ids_arr)
+        # Fixed Pmax = 1
+        prompt_ids = jnp.array(inp[:, :1])  # [B, 1]
         prompt_mask = (prompt_ids != pad_value).astype("int32")
+
+        # Completion is tokens after the first token; ensure at least width 1
+        if L - 1 <= 0:
+            completion_ids_arr = np.full((B, 1), pad_value, dtype=inp.dtype)
+            completion_mask_arr = np.zeros((B, 1), dtype=np.int32)
+        else:
+            completion_ids_arr = inp[:, 1:]
+            completion_mask_arr = loss_m.astype(np.int32)
+        completion_ids = jnp.array(completion_ids_arr)
         completion_mask = jnp.array(completion_mask_arr).astype("int32")
         # Derive eos_idx from completion_mask for robustness
         eos_idx = jnp.max(
             common.build_positions_from_mask(completion_mask),
             axis=-1,
         ).astype(jnp.int32)
+
 
         return prompt_ids, completion_ids, prompt_mask, completion_mask, eos_idx
 
@@ -314,6 +282,13 @@ class PpoLearnerExp(PpoLearner):
         )
         # Ensure float32 mask for stable arithmetic and reductions
         completion_mask = completion_mask.astype(jnp.float32)
+        # Debug: show count of EOS tokens per sample in completion_ids
+        try:
+            eos_counts = jnp.sum(completion_ids == eos_value, axis=-1)
+            jax.debug.print("[DBG] eos_count_per_sample: {}", eos_counts)
+            jax.debug.print("[DBG] total_eos_in_batch: {}", jnp.sum(eos_counts))
+        except Exception:
+            pass
         # ======= End Modificafiont ====
         
         batch_size = completion_ids.shape[0]
@@ -327,6 +302,7 @@ class PpoLearnerExp(PpoLearner):
               completion_tokens=completion_ids,
               pad_id=pad_value,
               eos_id=eos_value,
+              completion_mask=completion_mask.astype(jnp.int32),
           )
           # dtype safety
 
@@ -342,6 +318,7 @@ class PpoLearnerExp(PpoLearner):
         old_per_token_logps = self.rl_cluster.get_old_per_token_logps(
             prompt_tokens=prompt_ids,
             completion_tokens=completion_ids,
+            completion_mask=completion_mask.astype(jnp.int32),
         )
         _assert_float32(old_per_token_logps, "old_per_token_logps")
 
@@ -352,6 +329,7 @@ class PpoLearnerExp(PpoLearner):
             completion_tokens=completion_ids,
             pad_id=pad_value,
             eos_id=eos_value,
+            completion_mask=completion_mask.astype(jnp.int32),
         )
         _assert_float32(values, "values")
         # `values` start from the last *prompt* token. Shape: `[B, T]`.
@@ -842,6 +820,7 @@ def ppo_value_loss_fn(
       pad_id,
       eos_id,
       stop_gradient=False,
+      completion_mask=completion_mask.astype(jnp.int32),
   )
   vpreds = vpreds[:, -logits_to_keep - 1 : -1]
   # Ensure float32 for stable diff and clipping
@@ -868,9 +847,15 @@ def ppo_value_loss_fn(
       "vf_clipfrac": ppo_helpers.masked_mean(
           (vf_losses2 > vf_losses1).astype(jnp.float32), completion_mask
       ),
-      "values_min": jnp.min(vpreds * completion_mask + (1 - completion_mask) * jnp.inf, axis=-1).mean(),
+      "values_min": jnp.min(
+          jnp.where(completion_mask.astype(bool), vpreds, jnp.finfo(vpreds.dtype).max),
+          axis=-1,
+      ).mean(),
       "values_mean": ppo_helpers.masked_mean(vpreds, completion_mask),
-      "values_max": jnp.max(vpreds * completion_mask + (1 - completion_mask) * (-jnp.inf), axis=-1).mean(),
+      "values_max": jnp.max(
+          jnp.where(completion_mask.astype(bool), vpreds, -jnp.finfo(vpreds.dtype).max),
+          axis=-1,
+      ).mean(),
   }
   return vf_coef * vf_loss, aux
 
@@ -933,6 +918,7 @@ def ppo_policy_loss_fn(
       pad_id=pad_id,
       eos_id=eos_id,
       stop_gradient=False,
+      completion_mask=completion_mask.astype(jnp.int32),
   )
   # Ensure float32 for numerical stability
   _assert_float32(per_token_logps, "per_token_logps")
@@ -995,15 +981,14 @@ def ppo_policy_loss_fn(
     _assert_float32(total_loss, "total_loss")
     aux.update({
         "entropy": ppo_helpers.masked_mean(token_entropy, completion_mask),
-        "entropy/token_mean": (jnp.sum(token_entropy * completion_mask) / (jnp.sum(completion_mask) + 1e-8)),
         "loss/entropy": entropy_loss,
         "loss/total": total_loss,
     })
     # Best-effort visibility: print entropy metrics to stdout since aux isn't auto-logged by default
     try:
       jax.debug.print(
-        "[PPO/entropy] token_mean={:.6f} loss={:.6f} total={:.6f}",
-        aux["entropy/token_mean"], aux["loss/entropy"], aux["loss/total"],
+        "[PPO/entropy] entropy={:.6f} loss={:.6f} total={:.6f}",
+        aux["entropy"], aux["loss/entropy"], aux["loss/total"],
       )
     except Exception:
       pass
@@ -1014,7 +999,6 @@ def ppo_policy_loss_fn(
   zero = jnp.array(0.0, dtype=policy_loss.dtype)
   aux["loss/entropy"] = zero
   aux["entropy"] = zero
-  aux["entropy/token_mean"] = zero
   return policy_loss, aux
 
 # =============================================== END MODIFICATION ===============================================

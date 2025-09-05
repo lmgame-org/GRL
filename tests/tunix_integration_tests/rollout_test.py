@@ -24,7 +24,9 @@ import os
 from pathlib import Path
 from datetime import datetime
 
+import torch
 from grl.rollout.tunix_sync_multi_turn_rollout import SyncMultiTurnRollout
+from grl.rollout.sync_multi_turn_rollout import SyncMultiTurnRollout as TorchSyncMultiTurnRollout
 from grl.agents import REGISTERED_AGENTS
 
 
@@ -164,6 +166,15 @@ def _make_dummy_instance(tokenizer: _DummyTokenizer, cfg: _Cfg) -> SyncMultiTurn
   return inst
 
 
+def _make_dummy_instance_torch(tokenizer: _DummyTokenizer, cfg: _Cfg) -> TorchSyncMultiTurnRollout:
+  """Create a TorchSyncMultiTurnRollout instance without running its __init__."""
+  inst = object.__new__(TorchSyncMultiTurnRollout)
+  # Only attributes used by get_masks_and_scores
+  inst.tokenizer = tokenizer
+  inst.cfg = cfg
+  return inst
+
+
 def test_get_masks_and_scores_alignment():
   """Ensure loss_mask drops the last column and score_tensor drops the first.
 
@@ -234,6 +245,65 @@ def test_normalize_score_tensor_batch_grouping():
   # Then add penalties [0.1, -0.2] -> [-0.9, 0.8]
   expected_last = jnp.array([-0.9, 0.8], dtype=jnp.float32)
   assert jnp.allclose(norm_scores[:, -1], expected_last, atol=1e-5)
+
+
+def test_masks_and_scores_equivalence_between_impls():
+  """Apple-to-apple check: masks/scores match between Torch and Tunix implementations.
+
+  Both helpers compute (loss_mask, score_tensor, response_mask) from the same
+  input_ids and per-turn scores. We compare their outputs after dtype alignment.
+  """
+  tok = _DummyTokenizer(im_start_id=17, im_end_id=19)
+  cfg = _Cfg()
+  cfg.rollout.use_turn_scores = False
+
+  # Create dummy instances without full initialization
+  mgr_tunix = _make_dummy_instance(tok, cfg)
+  mgr_torch = _make_dummy_instance_torch(tok, cfg)
+
+  # Build a simple batch with deterministic special tokens
+  B, L = 3, 12
+  np_input = np.zeros((B, L), dtype=np.int32)
+  # Three turns at positions {0, 5, 9}; <|im_end|> at final position
+  np_input[:, 0] = tok._im_start_id
+  np_input[:, 5] = tok._im_start_id
+  np_input[:, 9] = tok._im_start_id
+  np_input[:, -1] = tok._im_end_id
+
+  # Per-sample per-turn scores (3 turns)
+  all_scores = [
+    [0.2, -0.1, 0.5],
+    [0.0, 0.0, 0.3],
+    [0.1, 0.2, 0.0],
+  ]
+
+  # JAX path
+  loss_tu, score_tu, resp_tu = mgr_tunix.get_masks_and_scores(
+      input_ids=jnp.array(np_input), all_scores=all_scores, use_turn_scores=False
+  )
+  # Torch path
+  loss_to, score_to, resp_to = mgr_torch.get_masks_and_scores(
+      input_ids=torch.tensor(np_input, dtype=torch.long),
+      all_scores=all_scores,
+      use_turn_scores=False,
+  )
+
+  # Align dtypes and compare
+  loss_tu_np = np.array(loss_tu)
+  score_tu_np = np.array(score_tu)
+  resp_tu_np = np.array(resp_tu)
+
+  loss_to_np = loss_to.detach().cpu().numpy()
+  score_to_np = score_to.detach().cpu().numpy()
+  resp_to_np = resp_to.detach().cpu().numpy()
+
+  # Exact match for boolean masks; numeric close for scores
+  assert loss_tu_np.shape == loss_to_np.shape
+  assert resp_tu_np.shape == resp_to_np.shape
+  assert np.array_equal(loss_tu_np.astype(np.int32), loss_to_np.astype(np.int32))
+  assert np.array_equal(resp_tu_np.astype(np.int32), resp_to_np.astype(np.int32))
+  assert score_tu_np.shape == score_to_np.shape
+  assert np.allclose(score_tu_np, score_to_np, atol=1e-6)
 
 
 
