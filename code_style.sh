@@ -1,4 +1,19 @@
 #!/bin/bash
+# Usage:
+#   ./code_style.sh [--diff [<base>]] [--check]
+#   ./code_style.sh --all-grl [--check]
+#
+# Modes:
+#   --diff (default): Format changed/new *.py/*.ipynb vs a base ref.
+#       Base auto-detect order: origin/HEAD → origin/main → origin/master → HEAD
+#       You can override base by passing it after --diff (e.g., origin/main).
+#   --all-grl: Format all *.py/*.ipynb under the grl/ directory.
+#
+# Flags:
+#   --check: Dry-run. Show diffs and exit non-zero if changes are needed.
+#
+# Output:
+#   All output is streamed to console and saved to cache/code_style_YYYYMMDD_HHMMSS.log
 set -e
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
