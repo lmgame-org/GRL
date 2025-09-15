@@ -13,7 +13,7 @@ TRAINING_TASKS=${6:-"simpleSokobanAgent"}
 VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,math500Agent_single_turn,math500Agent_5_turn,aime24Agent_single_turn,aime24Agent_5_turn,aime25Agent_single_turn,aime25Agent_5_turn,amc23Agent_single_turn,amc23Agent_5_turn,minervamathAgent_single_turn,minervamathAgent_5_turn"}
 N_GPUS_PER_NODE=${8:-4}
 PROJECT_NAME=${9:-"lmgame_train"}
-EXPERIMENT_NAME=${10:-"sokoban_qwen_7b_$(date +"%Y%m%d_%H%M%S")"}
+EXPERIMENT_NAME=${10:-"sokoban_qwen3_8b_math_exp_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen3-8B"}
 GPU_MEMORY_UTILIZATION=${12:-"0.5"}
 # Training control
