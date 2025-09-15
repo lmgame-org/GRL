@@ -11,10 +11,14 @@ class Math500Agent(BaseAgent):
     super().__init__(config, group_id, agent_id, seed, tag)
     self.initialize_env()
     if self.agent_config.get("use_custom_prompt", False):
-      self.prompt = "You are solving Math problems. Let's think step by step. Always put the answer in integer at the end of your response."
-      self.turn_prompt_template = (
-          """Incorrect Answer.\nQuestion:\n{state}\nPlease think again."""
-      )
+      if self.enable_think:
+        self.turn_prompt_template = (
+            """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
+        )
+      else:
+        self.turn_prompt_template = (
+            """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
+        )
 
   def initialize_env(self):
     self.env = Math500Env(self.env_config)

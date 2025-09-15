@@ -4,14 +4,14 @@
 # Configurable script with key training parameters
 
 # ------ Configurable Parameters ------
-CUDA_VISIBLE_DEVICES=${1:-"0,1,2,3"}
+CUDA_VISIBLE_DEVICES=${1:-"0,1,2,3,4,5,6,7"}
 AGENT_GROUP_NUM=${2:-"8"}
 AGENT_GROUP_SIZE=${3:-"16"}
 VALIDATION_AGENT_GROUP_NUM=${4:-"256,256,256,256,256,256,256,256,256,256,256,256,256,256"}
 VALIDATION_AGENT_GROUP_SIZE=${5:-"1,1,1,1,1,1,1,1,1,1,1,1,1,1"}
 TRAINING_TASKS=${6:-"simpleSokobanAgent"}
 VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,math500Agent_single_turn,math500Agent_5_turn,aime24Agent_single_turn,aime24Agent_5_turn,aime25Agent_single_turn,aime25Agent_5_turn,amc23Agent_single_turn,amc23Agent_5_turn,minervamathAgent_single_turn,minervamathAgent_5_turn"}
-N_GPUS_PER_NODE=${8:-4}
+N_GPUS_PER_NODE=${8:-8}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"sokoban_qwen3_8b_math_exp_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen3-8B"}
