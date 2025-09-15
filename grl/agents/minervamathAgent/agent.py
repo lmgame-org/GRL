@@ -11,9 +11,7 @@ class MinervamathAgent(BaseAgent):
     super().__init__(config, group_id, agent_id, seed, tag)
     self.initialize_env()
     if self.agent_config.get("use_custom_prompt", False):
-      self.prompt = (
-          "You are solving Math problems. Let's think step by step. Always put the answer in integer at the end of your response."
-      )
+      self.prompt = "You are solving Math problems. Let's think step by step. Always put the answer in integer at the end of your response."
       self.turn_prompt_template = (
           """Incorrect Answer.\nQuestion:\n{state}\nPlease think again."""
       )
@@ -30,7 +28,9 @@ class MinervamathAgent(BaseAgent):
         llm_raw_response, enable_think=self.enable_think
     )
 
-    self.messages.append({"role": "assistant", "content": processed_llm_response})
+    self.messages.append(
+        {"role": "assistant", "content": processed_llm_response}
+    )
 
     obs = self.env.render()
     total_reward = 0
@@ -44,7 +44,9 @@ class MinervamathAgent(BaseAgent):
       self.penalty += self.format_penalty
 
     self.total_actions_consumed += len(actions)
-    actions_left = max(0, self.max_actions_all_turns - self.total_actions_consumed)
+    actions_left = max(
+        0, self.max_actions_all_turns - self.total_actions_consumed
+    )
 
     if (
         self.cur_turn >= self.max_turns
@@ -71,5 +73,3 @@ class MinervamathAgent(BaseAgent):
         reward=total_reward,
         info=info,
     )
-
-

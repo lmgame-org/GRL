@@ -7,7 +7,6 @@ from grl.agents.base_env import BaseEnv
 
 
 class MinervamathEnv(BaseEnv):
-
   LATEX_SPACE = re.compile(r"\s+")
   BOXED_RE = re.compile(r"\\boxed\s*\{([^{}]*)\}")
   TEXT_RE = re.compile(r"\\text\s*\{([^{}]*)\}")
@@ -183,5 +182,3 @@ class MinervamathEnv(BaseEnv):
 
   def close(self) -> None:
     self._question = self._answer = None
-
-

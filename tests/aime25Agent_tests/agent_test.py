@@ -17,13 +17,20 @@ def setup_logging():
   log_path = log_dir / f"aime25_agent_test_{ts}.log"
 
   class Tee:
+
     def __init__(self, fp):
       self.file = open(fp, "w")
       self.stdout = sys.stdout
+
     def write(self, x):
-      self.file.write(x); self.file.flush(); self.stdout.write(x)
+      self.file.write(x)
+      self.file.flush()
+      self.stdout.write(x)
+
     def flush(self):
-      self.file.flush(); self.stdout.flush()
+      self.file.flush()
+      self.stdout.flush()
+
     def close(self):
       self.file.close()
 
@@ -37,8 +44,10 @@ def setup_logging():
 
 def load_config():
   cfg_dir = project_root / "configs"
-  with open(cfg_dir / "base.yaml") as f: base_cfg = yaml.safe_load(f)
-  with open(cfg_dir / "agents.yaml") as f: agent_cfgs = yaml.safe_load(f)
+  with open(cfg_dir / "base.yaml") as f:
+    base_cfg = yaml.safe_load(f)
+  with open(cfg_dir / "agents.yaml") as f:
+    agent_cfgs = yaml.safe_load(f)
   cfg = {**base_cfg, **agent_cfgs}
   print(f"✅ Loaded configuration from {cfg_dir}")
   return cfg
@@ -90,7 +99,9 @@ def test_single_rollout():
     _ = ag.get_llm_prompts(env_out)
     env_out = ag.get_env_outputs(f"<answer>{gold}</answer>")
     step += 1
-    print(f"   Turn {step}: reward={env_out.reward}, done={env_out.truncated or env_out.terminated}")
+    print(
+        f"   Turn {step}: reward={env_out.reward}, done={env_out.truncated or env_out.terminated}"
+    )
 
   states = ag.get_final_rollout_states()
   print(f"\n📊 Final metrics: {json.dumps(states['metrics'], indent=2)}")
@@ -106,6 +117,5 @@ if __name__ == "__main__":
     test_single_rollout()
     print("\n🎉 ALL AIME25Agent TESTS PASSED!")
   finally:
-    tee.close(); sys.stdout = tee.stdout
-
-
+    tee.close()
+    sys.stdout = tee.stdout

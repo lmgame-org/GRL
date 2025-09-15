@@ -6,9 +6,7 @@ from grl.agents.agent_utils import all_seed
 from grl.agents.base_env import BaseEnv
 
 
-
 class Math500Env(BaseEnv):
-
   LATEX_SPACE = re.compile(r"\s+")
   BOXED_RE = re.compile(r"\\boxed\s*\{([^{}]*)\}")
   TEXT_RE = re.compile(r"\\text\s*\{([^{}]*)\}")
@@ -95,7 +93,9 @@ class Math500Env(BaseEnv):
 
   @classmethod
   def _maybe_base_equal(cls, gold: str, user: str) -> bool:
-    m = re.fullmatch(r"([0-9A-Za-z]+)_([0-9]{1,2})", cls._canonical_atomic(gold))
+    m = re.fullmatch(
+        r"([0-9A-Za-z]+)_([0-9]{1,2})", cls._canonical_atomic(gold)
+    )
     if not m:
       return False
     digits, base_str = m.group(1), m.group(2)
@@ -207,5 +207,3 @@ class Math500Env(BaseEnv):
 
   def close(self) -> None:
     self._question = self._answer = None
-
-

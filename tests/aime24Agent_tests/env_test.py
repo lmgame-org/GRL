@@ -17,13 +17,20 @@ def setup_logging():
   log_path = log_dir / f"aime24_env_test_{ts}.log"
 
   class Tee:
+
     def __init__(self, fp):
       self.file = open(fp, "w")
       self.stdout = sys.stdout
+
     def write(self, x):
-      self.file.write(x); self.file.flush(); self.stdout.write(x)
+      self.file.write(x)
+      self.file.flush()
+      self.stdout.write(x)
+
     def flush(self):
-      self.file.flush(); self.stdout.flush()
+      self.file.flush()
+      self.stdout.flush()
+
     def close(self):
       self.file.close()
 
@@ -36,6 +43,7 @@ def setup_logging():
 
 
 class AIME24EnvConfig:
+
   def __init__(self):
     self.dataset_path = "math-ai/aime24"
     self.split = "test"
@@ -73,10 +81,10 @@ def test_step_logic_wrappers():
   env.reset(seed=123)
   gold = str(env.correct_answer)
   candidates = [
-    gold,
-    f"$ {gold} $",
-    f"\\boxed{{{gold}}}",
-    f"\\text{{{gold}}}",
+      gold,
+      f"$ {gold} $",
+      f"\\boxed{{{gold}}}",
+      f"\\text{{{gold}}}",
   ]
   for cand in candidates:
     _, r, done, info = env.step(cand)
@@ -129,18 +137,24 @@ if __name__ == "__main__":
   tee = setup_logging()
   try:
     print("🚀 Starting AIME24Env tests\n")
-    test_env_creation_and_reset();   print()
-    test_step_logic_wrappers();      print()
-    test_optional_equivalences();    print()
-    test_seeding_determinism();      print()
-    test_info_structure();           print()
+    test_env_creation_and_reset()
+    print()
+    test_step_logic_wrappers()
+    print()
+    test_optional_equivalences()
+    print()
+    test_seeding_determinism()
+    print()
+    test_info_structure()
+    print()
     print("=" * 60)
     print("🎉 All AIME24Env tests passed!")
     print(f"✅ Completed at {datetime.now()}")
   except Exception as e:
     print("❌ Test run failed:", e)
-    import traceback; traceback.print_exc()
+    import traceback
+
+    traceback.print_exc()
   finally:
-    tee.close(); sys.stdout = tee.stdout
-
-
+    tee.close()
+    sys.stdout = tee.stdout
