@@ -1,0 +1,283 @@
+# ------ Sokoban Agent & Env Configs ------
+simpleSokobanAgent:
+  agent_type: "sokobanAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Sokoban puzzles step by step."
+    prompt: "You are solving the Sokoban puzzle as a mathematical planning problem. Think step by step using mathematical reasoning (state, constraints, invariants, objective, plan). You are the player and you need to push all boxes to targets. When you are right next to a box, you can push it by moving in the same direction. You cannot push a box through a wall, and you cannot pull a box. The answer should be a sequence of actions, like <answer>Right || Right || Up</answer>."
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 6
+    max_actions_per_turn: 5
+    max_actions_all_turns: 10
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    dim_room: [6, 6]
+    num_boxes: 1
+    max_steps: 100
+    search_depth: 100  # Reduced from 300 to make simpler puzzles
+    grid_lookup: {0: "#", 1: "_", 2: "O", 3: "√", 4: "X", 5: "P", 6: "S"}
+    grid_vocab: {"#": "wall", "_": "empty", "O": "target", "√": "box on target", "X": "box", "P": "player", "S": "player on target"}
+    action_lookup: {1: "Up", 2: "Down", 3: "Left", 4: "Right"}
+    render_mode: "text"
+
+largeSokobanAgent:
+  agent_type: "sokobanAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Sokoban puzzles step by step."
+    prompt: "You are solving the Sokoban puzzle as a mathematical planning problem. Think step by step using mathematical reasoning (state, constraints, invariants, objective, plan). You are the player and you need to push all boxes to targets. When you are right next to a box, you can push it by moving in the same direction. You cannot push a box through a wall, and you cannot pull a box. The answer should be a sequence of actions, like <answer>Right || Right || Up</answer>."
+    enable_think: True  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 6
+    max_actions_per_turn: 5
+    max_actions_all_turns: 10
+    format_penalty: -0.1
+    action_separator: "||"
+
+  env_config:
+    dim_room: [8, 8]
+    num_boxes: 1
+    max_steps: 100
+    search_depth: 30  # Reduced from 300 to make simpler puzzles
+    grid_lookup: {0: "#", 1: "_", 2: "O", 3: "√", 4: "X", 5: "P", 6: "S"}
+    grid_vocab: {"#": "wall", "_": "empty", "O": "target", "√": "box on target", "X": "box", "P": "player", "S": "player on target"}
+    action_lookup: {1: "Up", 2: "Down", 3: "Left", 4: "Right"}
+    render_mode: "text"
+
+
+# ------ GSM8K Agent & Env Configs ------
+gsm8kAgent_single_turn:
+  agent_type: "gsm8kAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves GSM8K puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+    
+  env_config:
+    dataset_path: "openai/gsm8k"
+    max_steps: 5
+    split: "train"
+
+gsm8kAgent_5_turn:
+  agent_type: "gsm8kAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves GSM8K puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "openai/gsm8k"
+    max_steps: 5
+    split: "train"
+
+
+# ------ Math500 Agent & Env Configs ------
+math500Agent_single_turn:
+  agent_type: "math500Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Math500 puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+    
+  env_config:
+    dataset_path: "HuggingFaceH4/MATH-500"
+    max_steps: 5
+    split: "test"
+
+math500Agent_5_turn:
+  agent_type: "math500Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Math500 puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "HuggingFaceH4/MATH-500"
+    max_steps: 5
+    split: "test"
+
+# ------ AIME24 Agent & Env Configs ------
+aime24Agent_single_turn:
+  agent_type: "aime24Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves AIME 2024 problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "math-ai/aime24"
+    max_steps: 5
+    split: "test"
+
+aime24Agent_5_turn:
+  agent_type: "aime24Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves AIME 2024 problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+
+  env_config:
+    dataset_path: "math-ai/aime24"
+    max_steps: 5
+    split: "test"
+
+# ------ AIME25 Agent & Env Configs ------
+aime25Agent_single_turn:
+  agent_type: "aime25Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves AIME 2025 problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "math-ai/aime25"
+    max_steps: 5
+    split: "test"
+
+aime25Agent_5_turn:
+  agent_type: "aime25Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves AIME 2025 problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+
+  env_config:
+    dataset_path: "math-ai/aime25"
+    max_steps: 5
+    split: "test"
+
+# ------ AMC23 Agent & Env Configs ------
+amc23Agent_single_turn:
+  agent_type: "amc23Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves AMC 2023 problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "math-ai/amc23"
+    max_steps: 5
+    split: "test"
+
+amc23Agent_5_turn:
+  agent_type: "amc23Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves AMC 2023 problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+
+  env_config:
+    dataset_path: "math-ai/amc23"
+    max_steps: 5
+    split: "test"
+
+# ------ Minervamath Agent & Env Configs ------
+minervamathAgent_single_turn:
+  agent_type: "minervamathAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves MinervaMath problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "math-ai/minervamath"
+    max_steps: 5
+    split: "test"
+
+minervamathAgent_5_turn:
+  agent_type: "minervamathAgent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves MinervaMath problems step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False
+    max_tokens: 100
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+
+  env_config:
+    dataset_path: "math-ai/minervamath"
+    max_steps: 5
+    split: "test"
+
