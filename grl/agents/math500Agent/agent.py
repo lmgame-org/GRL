@@ -12,13 +12,9 @@ class Math500Agent(BaseAgent):
     self.initialize_env()
     if self.agent_config.get("use_custom_prompt", False):
       if self.enable_think:
-        self.turn_prompt_template = (
-            """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
-        )
+        self.turn_prompt_template = """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
       else:
-        self.turn_prompt_template = (
-            """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
-        )
+        self.turn_prompt_template = """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
 
   def initialize_env(self):
     self.env = Math500Env(self.env_config)
@@ -32,10 +28,10 @@ class Math500Agent(BaseAgent):
         llm_raw_response, enable_think=self.enable_think
     )
 
-    print("="*50)
+    print("=" * 50)
     print(f"Processed LLM response: {repr(processed_llm_response)}")
     print(f"Actions: {repr(actions)}")
-    print("="*50)
+    print("=" * 50)
 
     self.messages.append(
         {"role": "assistant", "content": processed_llm_response}

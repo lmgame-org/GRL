@@ -38,7 +38,7 @@ class AIME25Env(BaseEnv):
       m = cls.BOXED_RE.search(s)
       if not m:
         break
-      s = cls.BOXED_RE.sub(m.group(1), s)
+      s = cls.BOXED_RE.sub(lambda m: m.group(1), s)
     s = s.replace("\\left", "").replace("\\right", "")
     s = cls.TEXT_RE.sub(lambda m: m.group(1), s)
     s = cls.FRAC_RE.sub(lambda m: f"({m.group(1)})/({m.group(2)})", s)

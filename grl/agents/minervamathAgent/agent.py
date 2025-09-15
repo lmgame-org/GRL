@@ -12,13 +12,9 @@ class MinervamathAgent(BaseAgent):
     self.initialize_env()
     if self.agent_config.get("use_custom_prompt", False):
       if self.enable_think:
-        self.turn_prompt_template = (
-            """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
-        )
+        self.turn_prompt_template = """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
       else:
-        self.turn_prompt_template = (
-            """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
-        )
+        self.turn_prompt_template = """Incorrect Answer.\nQuestion:\n{state}\nPlease think again.Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
 
   def initialize_env(self):
     self.env = MinervamathEnv(self.env_config)
