@@ -3,7 +3,7 @@
 # ------ Hydra Config ------
 
 defaults:
-  - agents
+  - math_agents
   - ppo_trainer
   - _self_
 

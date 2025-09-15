@@ -28,8 +28,10 @@ class Math500Agent(BaseAgent):
         llm_raw_response, enable_think=self.enable_think
     )
 
-    print(f"Processed LLM response: {processed_llm_response}")
-    print(f"Actions: {actions}")
+    print("="*50)
+    print(f"Processed LLM response: {repr(processed_llm_response)}")
+    print(f"Actions: {repr(actions)}")
+    print("="*50)
 
     self.messages.append(
         {"role": "assistant", "content": processed_llm_response}
@@ -39,6 +41,7 @@ class Math500Agent(BaseAgent):
     total_reward = 0
     done = False
     info = {}
+
     if len(actions) != 0:
       obs, reward, done, step_info = self.env.step(actions[-1])
       total_reward += reward
