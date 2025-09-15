@@ -39,7 +39,7 @@ cd "$PROJECT_ROOT"
 
 # Setup logging
 mkdir -p cache
-LOG_FILE="cache/sokoban_qwen_7b_$(date +"%Y%m%d_%H%M%S").log"
+LOG_FILE="cache/sokoban_qwen3_8b_math_exp_$(date +"%Y%m%d_%H%M%S").log"
 echo "Logging to: $LOG_FILE"
 
 # ------ Environment Setup ------
