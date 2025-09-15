@@ -111,3 +111,25 @@ _safe_import(
     lambda: __import__("grl.agents.birdAgent.agent", fromlist=["BirdAgent"]),
     "birdAgent",
 )
+_safe_import(
+    lambda: __import__("grl.agents.aime24Agent.agent", fromlist=["AIME24Agent"]),
+    "aime24Agent",
+)
+_safe_import(
+    lambda: __import__("grl.agents.aime25Agent.agent", fromlist=["AIME25Agent"]),
+    "aime25Agent",
+)
+_safe_import(
+    lambda: __import__("grl.agents.amc23Agent.agent", fromlist=["AMC23Agent"]),
+    "amc23Agent",
+)
+_safe_import(
+    lambda: __import__("grl.agents.math500Agent.agent", fromlist=["Math500Agent"]),
+    "math500Agent",
+)
+_safe_import(
+    lambda: __import__(
+        "grl.agents.minervamathAgent.agent", fromlist=["MinervamathAgent"]
+    ),
+    "minervamathAgent",
+)

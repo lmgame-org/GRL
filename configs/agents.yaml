@@ -271,3 +271,43 @@ webshopAgent:
     human_goals: False
     show_attrs: False
     dataset_size: "small"
+
+
+# ------ Math500 Agent & Env Configs ------
+math500Agent_single_turn:
+  agent_type: "math500Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Math500 puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 1
+    max_actions_per_turn: 1
+    max_actions_all_turns: 1
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+    
+  env_config:
+    dataset_path: "HuggingFaceH4/MATH-500"
+    max_steps: 5
+    split: "test"
+
+math500Agent_5_turn:
+  agent_type: "math500Agent"
+  agent_config:
+    system_prompt: "You are a helpful AI assistant that solves Math500 puzzles step by step."
+    prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
+    enable_think: False  # enable thinking before answering
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
+    max_turns: 5
+    max_actions_per_turn: 1
+    max_actions_all_turns: 6
+    format_penalty: -0.1
+    use_custom_prompt: True
+    use_think_answer_token: False
+  
+  env_config:
+    dataset_path: "HuggingFaceH4/MATH-500"
+    max_steps: 5
+    split: "test"

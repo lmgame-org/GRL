@@ -67,6 +67,7 @@ dependencies = [
     # ENVIRONMENT & AGENT DEPENDENCIES
     "gym_sokoban",
     "gymnasium[toy-text]",
+    "gymnasium",
     "wandb",
     
     # DATA PROCESSING & UTILITIES
