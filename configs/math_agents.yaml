@@ -132,7 +132,7 @@ aime24Agent_single_turn:
     system_prompt: "You are a helpful AI assistant that solves AIME 2024 problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 1
     max_actions_per_turn: 1
     max_actions_all_turns: 1
@@ -151,7 +151,7 @@ aime24Agent_5_turn:
     system_prompt: "You are a helpful AI assistant that solves AIME 2024 problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 5
     max_actions_per_turn: 1
     max_actions_all_turns: 6
@@ -171,7 +171,7 @@ aime25Agent_single_turn:
     system_prompt: "You are a helpful AI assistant that solves AIME 2025 problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 1
     max_actions_per_turn: 1
     max_actions_all_turns: 1
@@ -190,7 +190,7 @@ aime25Agent_5_turn:
     system_prompt: "You are a helpful AI assistant that solves AIME 2025 problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 5
     max_actions_per_turn: 1
     max_actions_all_turns: 6
@@ -210,7 +210,7 @@ amc23Agent_single_turn:
     system_prompt: "You are a helpful AI assistant that solves AMC 2023 problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 1
     max_actions_per_turn: 1
     max_actions_all_turns: 1
@@ -229,7 +229,7 @@ amc23Agent_5_turn:
     system_prompt: "You are a helpful AI assistant that solves AMC 2023 problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 5
     max_actions_per_turn: 1
     max_actions_all_turns: 6
@@ -249,7 +249,7 @@ minervamathAgent_single_turn:
     system_prompt: "You are a helpful AI assistant that solves MinervaMath problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 1
     max_actions_per_turn: 1
     max_actions_all_turns: 1
@@ -268,7 +268,7 @@ minervamathAgent_5_turn:
     system_prompt: "You are a helpful AI assistant that solves MinervaMath problems step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: True
-    max_tokens: 400
+    max_tokens: 100
     max_turns: 5
     max_actions_per_turn: 1
     max_actions_all_turns: 6
