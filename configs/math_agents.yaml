@@ -5,7 +5,7 @@ simpleSokobanAgent:
     system_prompt: "You are a helpful AI assistant that solves Sokoban puzzles step by step."
     prompt: "You are solving a Sokoban puzzle as a mathematical planning problem on a 6x6 grid with Cartesian coordinates, where (0,0) is bottom-left and (5,5) is top-right. Model the state and next moves in coordinates, plan a shortest valid sequence that pushes boxes onto targets subject to Sokoban constraints (push one adjacent box into a free cell; no pulling; no walls/out-of-bounds; no overlaps). Think step by step with mathematical reasoning (state, constraints, invariants, objective, plan), then output only the action sequence like <answer>Right || Right || Up</answer>."
     enable_think: True  # enable thinking before answering
-    max_tokens: 400 # used to curate llm prompt "max words", not used for rollout
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
     max_turns: 6
     max_actions_per_turn: 5
     max_actions_all_turns: 10
@@ -28,7 +28,7 @@ largeSokobanAgent:
     system_prompt: "You are a helpful AI assistant that solves Sokoban puzzles step by step."
     prompt: "You are solving a Sokoban puzzle as a mathematical planning problem on an 8x8 grid with Cartesian coordinates, where (0,0) is bottom-left and (7,7) is top-right. Model the state and next moves in coordinates, plan a shortest valid sequence that pushes boxes onto targets subject to Sokoban constraints (push one adjacent box into a free cell; no pulling; no walls/out-of-bounds; no overlaps). Think step by step with mathematical reasoning (state, constraints, invariants, objective, plan), then output only the action sequence like <answer>Right || Right || Up</answer>."
     enable_think: True  # enable thinking before answering
-    max_tokens: 400 # used to curate llm prompt "max words", not used for rollout
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
     max_turns: 6
     max_actions_per_turn: 5
     max_actions_all_turns: 10
@@ -53,7 +53,7 @@ gsm8kAgent_single_turn:
     system_prompt: "You are a helpful AI assistant that solves GSM8K puzzles step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: False  # enable thinking before answering
-    max_tokens: 400 # used to curate llm prompt "max words", not used for rollout
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
     max_turns: 1
     max_actions_per_turn: 1
     max_actions_all_turns: 1
@@ -72,7 +72,7 @@ gsm8kAgent_5_turn:
     system_prompt: "You are a helpful AI assistant that solves GSM8K puzzles step by step."
     prompt: "You are solving Math problems. Let's think step by step. You should put all thinking process into <think>...</think> and then only give the final answer in <answer>...</answer>, like <answer>123</answer>."
     enable_think: False  # enable thinking before answering
-    max_tokens: 400 # used to curate llm prompt "max words", not used for rollout
+    max_tokens: 100 # used to curate llm prompt "max words", not used for rollout
     max_turns: 5
     max_actions_per_turn: 1
     max_actions_all_turns: 6
