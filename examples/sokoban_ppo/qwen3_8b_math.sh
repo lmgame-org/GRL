@@ -14,7 +14,7 @@ VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_tu
 N_GPUS_PER_NODE=${8:-8}
 PROJECT_NAME=${9:-"lmgame_train"}
 EXPERIMENT_NAME=${10:-"sokoban_qwen3_8b_math_exp_$(date +"%Y%m%d_%H%M%S")"}
-MODEL_PATH=${11:-"Qwen/Qwen3-8B"}
+MODEL_PATH=${11:-"Qwen/Qwen3-8B-Base"}
 GPU_MEMORY_UTILIZATION=${12:-"0.5"}
 # Training control
 TOTAL_TRAINING_STEPS=${13:-200}  # default 100 for Tetris
