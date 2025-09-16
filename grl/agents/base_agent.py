@@ -295,3 +295,16 @@ class BaseAgent:
   def get_env_outputs(self, llm_response):
     """Process LLM outputs and get environment outputs."""
     pass
+
+  # ─────────────────── DEBUG UTILITIES ───────────────────
+  def print_processed_llm(self, processed_llm_response, actions):
+    """Pretty-print processed LLM response and actions using repr."""
+    try:
+      sep = "=" * 50
+      agent_name = self.tag or self.__class__.__name__
+      print(sep)
+      print(f"[{agent_name}] processed_llm_response: {repr(processed_llm_response)}")
+      print(f"[{agent_name}] actions({len(actions)}): {repr(actions)}")
+      print(sep)
+    except Exception:
+      pass

@@ -56,6 +56,9 @@ class SokobanAgent(BaseAgent):
         llm_raw_response, enable_think=self.enable_think
     )
 
+    # debug printout
+    self.print_processed_llm(processed_llm_response, actions)
+
     self.messages.append(
         {"role": "assistant", "content": processed_llm_response}
     )

@@ -27,11 +27,8 @@ class Math500Agent(BaseAgent):
     processed_llm_response, actions = self.parse_llm_response(
         llm_raw_response, enable_think=self.enable_think
     )
-
-    print("=" * 50)
-    print(f"Processed LLM response: {repr(processed_llm_response)}")
-    print(f"Actions: {repr(actions)}")
-    print("=" * 50)
+    # debug printout
+    self.print_processed_llm(processed_llm_response, actions)
 
     self.messages.append(
         {"role": "assistant", "content": processed_llm_response}
