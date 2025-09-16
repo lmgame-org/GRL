@@ -43,7 +43,7 @@ n_gpus_per_node: 1
 max_prompt_length: 4096
 max_response_length: 400
 test_freq: 10
-save_freq: 200
+save_freq: -1
 gpu_memory_utilization: 0.5
 model_path: Qwen/Qwen2.5-0.5B-Instruct
 project_name: lmgame_train
