@@ -303,7 +303,9 @@ class BaseAgent:
       sep = "=" * 50
       agent_name = self.tag or self.__class__.__name__
       print(sep)
-      print(f"[{agent_name}] processed_llm_response: {repr(processed_llm_response)}")
+      print(
+          f"[{agent_name}] processed_llm_response: {repr(processed_llm_response)}"
+      )
       print(f"[{agent_name}] actions({len(actions)}): {repr(actions)}")
       print(sep)
     except Exception:
