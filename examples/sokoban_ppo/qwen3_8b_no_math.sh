@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Sokoban PPO Training with Qwen 7B
+# Sokoban PPO Training with Qwen3 8B (no-math prompts)
 # Configurable script with key training parameters
 
 # ------ Configurable Parameters ------
@@ -13,13 +13,13 @@ TRAINING_TASKS=${6:-"simpleSokobanAgent"}
 VALIDATION_TASKS=${7:-"simpleSokobanAgent,largeSokobanAgent,gsm8kAgent_single_turn,gsm8kAgent_5_turn,math500Agent_single_turn,math500Agent_5_turn,aime24Agent_single_turn,aime24Agent_5_turn,aime25Agent_single_turn,aime25Agent_5_turn,amc23Agent_single_turn,amc23Agent_5_turn,minervamathAgent_single_turn,minervamathAgent_5_turn"}
 N_GPUS_PER_NODE=${8:-8}
 PROJECT_NAME=${9:-"lmgame_train"}
-EXPERIMENT_NAME=${10:-"sokoban_qwen3_8b_math_exp_$(date +"%Y%m%d_%H%M%S")"}
+EXPERIMENT_NAME=${10:-"sokoban_qwen3_8b_nomath_exp_$(date +"%Y%m%d_%H%M%S")"}
 MODEL_PATH=${11:-"Qwen/Qwen3-8B"}
 GPU_MEMORY_UTILIZATION=${12:-"0.5"}
 # Training control
 TOTAL_TRAINING_STEPS=${13:-200}  # default 100 for Tetris
 
-echo "=== Sokoban PPO Training with Qwen 7B ==="
+echo "=== Sokoban PPO Training with Qwen3-8B (no-math) ==="
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "Agent Group Num: [$AGENT_GROUP_NUM]"
 echo "Agent Group Size: [$AGENT_GROUP_SIZE]"
@@ -39,7 +39,7 @@ cd "$PROJECT_ROOT"
 
 # Setup logging
 mkdir -p cache
-LOG_FILE="cache/sokoban_qwen3_8b_math_exp_$(date +"%Y%m%d_%H%M%S").log"
+LOG_FILE="cache/sokoban_qwen3_8b_nomath_exp_$(date +"%Y%m%d_%H%M%S").log"
 echo "Logging to: $LOG_FILE"
 
 # ------ Environment Setup ------
@@ -78,9 +78,9 @@ python grl/train.py \
 echo "Training completed. Log: $LOG_FILE"
 
 # ------ Usage Examples ------
-# Default: ./qwen_7b.sh
-# Custom GPUs: ./qwen_7b.sh "0,1"
-# Custom agent groups: ./qwen_7b.sh "0,1,2,3" "16" "32"
-# Custom validation groups: ./qwen_7b.sh "0,1,2,3" "8" "16" "512,512" "1,1"
-# Custom tasks: ./qwen_7b.sh "0,1,2,3" "8" "16" "256,256" "1,1" "simpleSokobanAgent" "simpleSokobanAgent,largeSokobanAgent"
-# Full custom: ./qwen_7b.sh "0,1,2,3" "8" "16" "256,256,256,256" "1,1,1,1" "simpleSokobanAgent" "simpleSokobanAgent,largeSokobanAgent" 4 "my_project" "my_experiment" "Qwen/Qwen2.5-7B-Instruct"
+# Default: ./qwen3_8b_no_math.sh
+# Custom GPUs: ./qwen3_8b_no_math.sh "0,1"
+# Custom agent groups: ./qwen3_8b_no_math.sh "0,1,2,3" "16" "32"
+# Custom validation groups: ./qwen3_8b_no_math.sh "0,1,2,3" "8" "16" "512,512" "1,1"
+# Custom tasks: ./qwen3_8b_no_math.sh "0,1,2,3" "8" "16" "256,256" "1,1" "simpleSokobanAgent" "simpleSokobanAgent,largeSokobanAgent"
+# Full custom: ./qwen3_8b_no_math.sh "0,1,2,3" "8" "16" "256,256,256,256" "1,1,1,1" "simpleSokobanAgent" "simpleSokobanAgent,largeSokobanAgent" 4 "my_project" "my_experiment" "Qwen/Qwen3-8B"
