@@ -566,6 +566,22 @@ class SyncMultiTurnRollout:
         "rollout/chosen_in_group_max": in_group_max[top_groups].mean(),
         "rollout/chosen_in_group_mean": in_group_mean[top_groups].mean(),
     }
+    # Debug: print a sample trajectory (messages) using repr
+    try:
+      msgs_arr = rollout_batch.non_tensor_batch.get("messages_list")
+      if msgs_arr is not None and len(msgs_arr) > 0:
+        sample_msgs = msgs_arr[0]
+        if isinstance(sample_msgs, list) and all(isinstance(m, dict) for m in sample_msgs):
+          sample_text = "\n".join([f"{m.get('role','?')}: {m.get('content','')}" for m in sample_msgs])
+        else:
+          sample_text = str(sample_msgs)
+        sep = "=" * 50
+        print(sep)
+        print("[filter_rollout] trajectory sample (repr):")
+        print(repr(sample_text))
+        print(sep)
+    except Exception:
+      pass
     return rollout_batch, metrics
 
   def _collect_final_rollout_states(self) -> List[Dict]:
