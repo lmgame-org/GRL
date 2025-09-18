@@ -178,7 +178,9 @@ The framework is pre‑configured for different GPU setups:
 
 ## Acknowledgments
 
-Our work is powered by [VERL](https://github.com/volcengine/verl), an open‑source RLHF library, and draws insights from [Ragen](https://github.com/RAGEN-AI/RAGEN).
+We gratefully acknowledge [Tunix](https://github.com/google/tunix), a JAX‑native LLM post‑training library whose TPU support and JAX‑first techniques enabled us to achieve scalable multi‑turn PPO training on TPU with JAX.
+
+Our work is also powered by [VERL](https://github.com/volcengine/verl), and we draw valuable insights from [RAGEN](https://github.com/RAGEN-AI/RAGEN) that informed how we train multi‑turn PPO in our experiments.
 
 ## Citation
 If you find this repository helpful, please kindly cite:
