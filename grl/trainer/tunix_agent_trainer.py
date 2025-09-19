@@ -28,18 +28,27 @@ import jax.nn as jnn
 # Re-exported wrappers inherit from Tunix PPO implementations
 from tunix.rl.ppo.ppo_learner import (
     TrainExample as BaseTrainExample,  # re-export base
-    PpoConfig as BasePpoConfig,       # re-export base
+    PpoConfig as BasePpoConfig,  # re-export base
     PpoLearner,
 )
+
 
 # Extend base types with entropy configuration used only by the custom loss
 @flax.struct.dataclass(frozen=True)
 class TrainExample(BaseTrainExample):
-  entropy_coeff: jax.Array | float = flax.struct.field(pytree_node=False, default=0.0)
+  entropy_coeff: jax.Array | float = flax.struct.field(
+      pytree_node=False, default=0.0
+  )
   aggs_mode: str = flax.struct.field(pytree_node=False, default="token-mean")
-  clip_ratio_low: jax.Array | float = flax.struct.field(pytree_node=False, default=0.2)
-  clip_ratio_high: jax.Array | float = flax.struct.field(pytree_node=False, default=0.2)
-  clip_ratio_c: jax.Array | float | None = flax.struct.field(pytree_node=False, default=None)
+  clip_ratio_low: jax.Array | float = flax.struct.field(
+      pytree_node=False, default=0.2
+  )
+  clip_ratio_high: jax.Array | float = flax.struct.field(
+      pytree_node=False, default=0.2
+  )
+  clip_ratio_c: jax.Array | float | None = flax.struct.field(
+      pytree_node=False, default=None
+  )
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -51,6 +60,7 @@ class PpoConfig(BasePpoConfig):
   clip_ratio_high: float = 0.28
   clip_ratio_c: float | None = None
 
+
 _TrainingInputT = Dict[str, List[str] | ArrayLike]
 
 # prompts, completions, **kargs -> rewards
@@ -61,6 +71,7 @@ __all__ = [
     "PpoConfig",
     "PpoLearner",
 ]
+
 
 @jax.jit
 def compute_gae_advantages(
@@ -103,7 +114,10 @@ def compute_gae_advantages(
 
     return (next_values_new, last_gae_new), last_gae_new
 
-  init_carry = (jnp.zeros((B,), dtype=values.dtype), jnp.zeros((B,), dtype=values.dtype))
+  init_carry = (
+      jnp.zeros((B,), dtype=values.dtype),
+      jnp.zeros((B,), dtype=values.dtype),
+  )
   xs = (jnp.transpose(rewards), jnp.transpose(values), jnp.transpose(mask))
 
   (_, _), advantages_T = jax.lax.scan(
@@ -116,6 +130,7 @@ def compute_gae_advantages(
   advantages = jnp.transpose(advantages_T)
   returns = advantages + values
   return advantages, returns
+
 
 # (Entropy helpers removed)
 @jax.jit
@@ -197,12 +212,12 @@ def ppo_policy_loss_fn(
   old_per_token_logps = train_example.old_per_token_logps
   ratio = jnp.exp(per_token_logps - old_per_token_logps)
   # Asymmetric clipping (VERL-style)
-  low  = 1.0 - float(getattr(train_example, "clip_ratio_low",  epsilon))
+  low = 1.0 - float(getattr(train_example, "clip_ratio_low", epsilon))
   high = 1.0 + float(getattr(train_example, "clip_ratio_high", epsilon))
   ratio_clipped = jnp.clip(ratio, low, high)
   # Vanilla clipped loss per token
   pg_tok = -jnp.minimum(ratio * advantages, ratio_clipped * advantages)
-  
+
   aux = {}
   # Optional dual-clip
   clip_c = getattr(train_example, "clip_ratio_c", None)
@@ -210,9 +225,13 @@ def ppo_policy_loss_fn(
     try:
       c = float(clip_c)
       if c > 1.0:
-        pg_tok = jnp.where((advantages < 0) & (ratio > c), -c * advantages, pg_tok)
+        pg_tok = jnp.where(
+            (advantages < 0) & (ratio > c), -c * advantages, pg_tok
+        )
         dual_mask = (advantages < 0) & (ratio > c)
-        aux["policy/dualclip_frac"] = ppo_helpers.masked_mean(dual_mask.astype(ratio.dtype), completion_mask)
+        aux["policy/dualclip_frac"] = ppo_helpers.masked_mean(
+            dual_mask.astype(ratio.dtype), completion_mask
+        )
     except Exception:
       pass
   policy_loss = ppo_helpers.masked_mean(pg_tok, completion_mask)
@@ -221,11 +240,17 @@ def ppo_policy_loss_fn(
       ((ratio < low) | (ratio > high)).astype(ratio.dtype), completion_mask
   )
   aux["policy/clipfrac"] = pg_clipfrac
-  entropy_coeff = float(train_example.entropy_coeff) if train_example.entropy_coeff is not None else 0.0
+  entropy_coeff = (
+      float(train_example.entropy_coeff)
+      if train_example.entropy_coeff is not None
+      else 0.0
+  )
   if entropy_coeff > 0.0:
     # Per request: always use token-mean aggregation for entropy
     token_entropy = entropy_from_logits(logits_slice)
-    entropy_loss = agg_loss(token_entropy, completion_mask, loss_agg_mode="token-mean")
+    entropy_loss = agg_loss(
+        token_entropy, completion_mask, loss_agg_mode="token-mean"
+    )
     policy_loss = policy_loss - (entropy_coeff * entropy_loss)
     aux["entropy/loss_mean"] = entropy_loss
     aux["entropy/coeff"] = entropy_coeff
@@ -261,7 +286,7 @@ def ppo_value_loss_fn(
       eos_id,
       stop_gradient=False,
   )
-  vpreds = vpreds[:, -logits_to_keep :]
+  vpreds = vpreds[:, -logits_to_keep:]
   vpreds = jnp.where(
       completion_mask,
       vpreds,
@@ -299,17 +324,18 @@ class MultiTurnPpoLearner(PpoLearner):
 
   Override lifecycle hooks or training logic here progressively.
   """
+
   def __init__(
-    self,
-    rl_cluster: rl_cluster_lib.RLCluster,
-    ppo_config: PpoConfig,
-    reward_fns: RewardFn | List[RewardFn] | None = None,
-    data_shuffle_seed: int | None = None,
-    *,
-    multi_turn_cfg=None,
-    multi_turn_processor=None,
-    multi_turn_validation: bool = False,
-    ):
+      self,
+      rl_cluster: rl_cluster_lib.RLCluster,
+      ppo_config: PpoConfig,
+      reward_fns: RewardFn | List[RewardFn] | None = None,
+      data_shuffle_seed: int | None = None,
+      *,
+      multi_turn_cfg=None,
+      multi_turn_processor=None,
+      multi_turn_validation: bool = False,
+  ):
     super().__init__(
         rl_cluster=rl_cluster,
         ppo_config=ppo_config,
@@ -320,7 +346,6 @@ class MultiTurnPpoLearner(PpoLearner):
     self.rl_cluster.actor_trainer.with_loss_fn(ppo_policy_loss_fn, has_aux=True)
     self.rl_cluster.critic_trainer.with_loss_fn(ppo_value_loss_fn, has_aux=True)
 
-    
     # ─────────────────── Multi-turn rollout manager ───────────────────
     # Initialize when config is provided; otherwise remain None (fallback to single-turn)
     self.multi_turn_rollout = None
@@ -347,7 +372,7 @@ class MultiTurnPpoLearner(PpoLearner):
       )
     # Storage for last built rollout batch to aid later conversion to TrainExample
     self._last_rollout_batch = None
-    
+
   def _generate_and_compute_advantage(
       self,
       training_input: _TrainingInputT,
@@ -365,19 +390,20 @@ class MultiTurnPpoLearner(PpoLearner):
     """
     pad_value = self.rl_cluster.rollout.pad_id()
     eos_value = self.rl_cluster.rollout.eos_id()
+
     def _get_rollout_config_for_mode(_mode: metrics_logger.Mode):
       rc = self.rl_cluster.cluster_config.rollout_config
       if isinstance(rc, dict):
         key = (
-          rl_cluster_lib.Mode.TRAIN
-          if _mode == metrics_logger.Mode.TRAIN
-          else rl_cluster_lib.Mode.EVAL
+            rl_cluster_lib.Mode.TRAIN
+            if _mode == metrics_logger.Mode.TRAIN
+            else rl_cluster_lib.Mode.EVAL
         )
         return rc[key]
       return rc
 
     max_prompt_length = _get_rollout_config_for_mode(mode).max_prompt_length
-    
+
     # ─────────────────── MODIFICATION: Multi-turn rollout with deferred metrics logging ───────────────────
     # Multi-turn rollout (side-by-side). We defer logging of rollout metrics to the unified
     # metric logging section below to match PPO learner logging semantics.
@@ -386,7 +412,10 @@ class MultiTurnPpoLearner(PpoLearner):
     if self.multi_turn_rollout is not None:
       try:
         mt_batch = self.multi_turn_rollout.rollout()
-        mt_batch_filtered, mt_metrics = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
+        (
+            mt_batch_filtered,
+            mt_metrics,
+        ) = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
         self._last_rollout_batch = mt_batch_filtered
         # Defer logging of multi-turn metrics to the unified metric logging section
         mt_metrics_dict = dict(mt_metrics)
@@ -416,31 +445,44 @@ class MultiTurnPpoLearner(PpoLearner):
       prompt_mask_local = (prompt_ids_local != pad_value).astype("int32")
 
       # EOS index (for terminal reward placement)
-      eos_idx_local = jnp.max(common.build_positions_from_mask(completion_mask_local), axis=-1)
+      eos_idx_local = jnp.max(
+          common.build_positions_from_mask(completion_mask_local), axis=-1
+      )
 
       # ---- build completion_plus_one_mask (t+1 validity) ----
       T = completion_mask_local.shape[1]
       # shift mask by one to the right (tokens that have a valid next state)
-      cpm1 = jnp.pad(completion_mask_local[:, 1:], ((0, 0), (0, 1)), constant_values=False)
+      cpm1 = jnp.pad(
+          completion_mask_local[:, 1:], ((0, 0), (0, 1)), constant_values=False
+      )
       # also mark the position right after EOS as valid (cap at T-1)
       idx_p1 = jnp.minimum(eos_idx_local + 1, T - 1)
       cpm1 = cpm1.at[jnp.arange(B), idx_p1].set(True)
 
       return (
-        prompt_ids_local,
-        completion_ids_local,
-        prompt_mask_local,
-        completion_mask_local,
-        eos_idx_local,
-        cpm1,
+          prompt_ids_local,
+          completion_ids_local,
+          prompt_mask_local,
+          completion_mask_local,
+          eos_idx_local,
+          cpm1,
       )
 
     if self.multi_turn_rollout is None or self._last_rollout_batch is None:
-      raise RuntimeError("Multi-turn rollout is not initialized or has no batch; cannot perform full-conversation PPO.")
+      raise RuntimeError(
+          "Multi-turn rollout is not initialized or has no batch; cannot perform full-conversation PPO."
+      )
 
-    (prompt_ids, completion_ids, prompt_mask, completion_mask, eos_idx, completion_plus_one_mask) = _convert_rollout_batch_to_tunix_format(
-      self._last_rollout_batch,
-      int(max_prompt_length),
+    (
+        prompt_ids,
+        completion_ids,
+        prompt_mask,
+        completion_mask,
+        eos_idx,
+        completion_plus_one_mask,
+    ) = _convert_rollout_batch_to_tunix_format(
+        self._last_rollout_batch,
+        int(max_prompt_length),
     )
 
     batch_size = completion_ids.shape[0]
@@ -494,7 +536,7 @@ class MultiTurnPpoLearner(PpoLearner):
     )
 
     # Slice last T and mask with completion_mask
-    values = values[:, -logits_to_keep :]
+    values = values[:, -logits_to_keep:]
     values = jnp.where(
         completion_mask,
         values,
@@ -503,7 +545,9 @@ class MultiTurnPpoLearner(PpoLearner):
     # Lightweight consistency check (no crash): ensure value targets align with completion length
     try:
       if int(values.shape[1]) != int(logits_to_keep):
-        print(f"[warn] values length ({int(values.shape[1])}) != completion length ({int(logits_to_keep)})")
+        print(
+            f"[warn] values length ({int(values.shape[1])}) != completion length ({int(logits_to_keep)})"
+        )
     except Exception:
       pass
 
@@ -529,8 +573,13 @@ class MultiTurnPpoLearner(PpoLearner):
       reward_scores_jax = jnp.asarray(self._last_rollout_batch.reward_scores)
       try:
         # Match sharding with completion_ids when available (pjit/named sharding setups)
-        if hasattr(completion_ids, "sharding") and completion_ids.sharding is not None:
-          reward_scores_jax = jax.device_put(reward_scores_jax, completion_ids.sharding)
+        if (
+            hasattr(completion_ids, "sharding")
+            and completion_ids.sharding is not None
+        ):
+          reward_scores_jax = jax.device_put(
+              reward_scores_jax, completion_ids.sharding
+          )
       except Exception:
         # Best-effort; fallback keeps it as a regular JAX array on default device
         pass
@@ -569,18 +618,20 @@ class MultiTurnPpoLearner(PpoLearner):
         batch_indices = jax.device_put(batch_indices, rewards.sharding)
         eos_idx = jax.device_put(eos_idx, rewards.sharding)
         # ─────────────────── MODIFICATION: Cast rewards update to match dtype/sharding ───────────────────
-        last_token_scores = jax.device_put(last_token_scores.astype(rewards.dtype), rewards.sharding)
+        last_token_scores = jax.device_put(
+            last_token_scores.astype(rewards.dtype), rewards.sharding
+        )
         # ─────────────────── END MODIFICATION ───────────────────
       except Exception:
         pass
-    rewards = rewards.at[batch_indices, eos_idx].add(last_token_scores.astype(rewards.dtype))
+    rewards = rewards.at[batch_indices, eos_idx].add(
+        last_token_scores.astype(rewards.dtype)
+    )
 
     # ===== Metric logging ======
     # TODO(abheesht): Verify metric logging. We should move these to losses,
     # because the rollout batch can be split into mini-batches.
     step = self._get_metric_logging_steps(mode)
-
-
 
     # Log raw scores from the reward model/fn
     self._actor_metrics_logger.log(
@@ -610,8 +661,15 @@ class MultiTurnPpoLearner(PpoLearner):
           kl, completion_mask, axis=-1  # pylint: disable=undefined-variable
       )
       current_kl = per_sequence_mean_kl.mean()
-      self._actor_metrics_logger.log("actor/reward_kl_penalty", float(current_kl), mode, step)
-      self._actor_metrics_logger.log("actor/reward_kl_penalty_coeff", float(self.ppo_config.beta), mode, step)
+      self._actor_metrics_logger.log(
+          "actor/reward_kl_penalty", float(current_kl), mode, step
+      )
+      self._actor_metrics_logger.log(
+          "actor/reward_kl_penalty_coeff",
+          float(self.ppo_config.beta),
+          mode,
+          step,
+      )
 
     # (Entropy metrics removed)
 
@@ -624,7 +682,9 @@ class MultiTurnPpoLearner(PpoLearner):
       for name, value in meta_metrics_dict.items():
         self._actor_metrics_logger.log(name, float(value), mode, step)
     if self.ppo_config.entropy_coeff > 0.0:
-      self._actor_metrics_logger.log("entropy/coeff", float(self.ppo_config.entropy_coeff), mode, step)
+      self._actor_metrics_logger.log(
+          "entropy/coeff", float(self.ppo_config.entropy_coeff), mode, step
+      )
     # ─────────────────── END MODIFICATION ───────────────────
 
     # Log completion lengths.
@@ -648,7 +708,6 @@ class MultiTurnPpoLearner(PpoLearner):
         step,
     )
 
-
     # ===== Compute advantages using Generalised Advantage Estimation ======
     # advantages, returns = ppo_helpers.compute_gae_advantages(
     #     rewards=rewards,
@@ -665,7 +724,7 @@ class MultiTurnPpoLearner(PpoLearner):
     )
     # Normalize advantages.
     advantages = ppo_helpers.normalize_advantages(advantages, completion_mask)
-    
+
     return TrainExample(
         prompt_ids=prompt_ids,
         prompt_mask=prompt_mask,
@@ -833,7 +892,9 @@ class MultiTurnPpoLearner(PpoLearner):
     # Ensure validation rollout exists
     if self.validation_multi_turn_rollout is None:
       if self._multi_turn_cfg is None:
-        raise RuntimeError("Multi-turn validation requested but no multi_turn_cfg provided.")
+        raise RuntimeError(
+            "Multi-turn validation requested but no multi_turn_cfg provided."
+        )
       self.validation_multi_turn_rollout = SyncMultiTurnRollout(
           rl_cluster=self.rl_cluster,
           cfg=self._multi_turn_cfg,
@@ -844,11 +905,15 @@ class MultiTurnPpoLearner(PpoLearner):
 
     # Trigger print for visibility
     try:
-      eval_every = self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+      eval_every = (
+          self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+      )
     except Exception:
       eval_every = None
     current_train_steps = self.rl_cluster.actor_trainer.train_steps
-    print(f"[VALIDATION] Start rollout | train_step={current_train_steps} eval_every_n_steps={eval_every}")
+    print(
+        f"[VALIDATION] Start rollout | train_step={current_train_steps} eval_every_n_steps={eval_every}"
+    )
 
     # Run a single validation rollout (no filtering)
     mt_batch = self.validation_multi_turn_rollout.rollout()
@@ -860,7 +925,9 @@ class MultiTurnPpoLearner(PpoLearner):
     eval_log_step = current_train_steps
     for name, value in metrics_dict.items():
       try:
-        self._actor_metrics_logger.log(name, float(value), metrics_logger.Mode.EVAL, eval_log_step)
+        self._actor_metrics_logger.log(
+            name, float(value), metrics_logger.Mode.EVAL, eval_log_step
+        )
       except Exception:
         pass
 
@@ -868,16 +935,34 @@ class MultiTurnPpoLearner(PpoLearner):
     try:
       _cm = np.array(mt_batch.loss_mask)
       _agg = _cm.sum(axis=-1)
-      self._actor_metrics_logger.log("completions/mean_length", float(_agg.mean()), metrics_logger.Mode.EVAL, eval_log_step)
-      self._actor_metrics_logger.log("completions/max_length", float(_agg.max()), metrics_logger.Mode.EVAL, eval_log_step)
-      self._actor_metrics_logger.log("completions/min_length", float(_agg.min()), metrics_logger.Mode.EVAL, eval_log_step)
+      self._actor_metrics_logger.log(
+          "completions/mean_length",
+          float(_agg.mean()),
+          metrics_logger.Mode.EVAL,
+          eval_log_step,
+      )
+      self._actor_metrics_logger.log(
+          "completions/max_length",
+          float(_agg.max()),
+          metrics_logger.Mode.EVAL,
+          eval_log_step,
+      )
+      self._actor_metrics_logger.log(
+          "completions/min_length",
+          float(_agg.min()),
+          metrics_logger.Mode.EVAL,
+          eval_log_step,
+      )
     except Exception:
       pass
 
     # Reset to free memory and bump local eval counter
     self.validation_multi_turn_rollout.reset()
     self._eval_steps += 1
-    print(f"[VALIDATION] Done | logged {len(metrics_dict)} metrics at step={eval_log_step}")
+    print(
+        f"[VALIDATION] Done | logged {len(metrics_dict)} metrics at step={eval_log_step}"
+    )
+
   # ─────────────────── END MODIFICATION ───────────────────
 
   def train(
@@ -891,7 +976,9 @@ class MultiTurnPpoLearner(PpoLearner):
     if not hasattr(self, "_initial_eval_done") or not self._initial_eval_done:
       try:
         if self.should_sync_weights:
-          with jax.profiler.StepTraceAnnotation("sync_sampler_weights", step_num=0):
+          with jax.profiler.StepTraceAnnotation(
+              "sync_sampler_weights", step_num=0
+          ):
             self.rl_cluster.sync_weights()
       except Exception:
         pass
@@ -963,7 +1050,9 @@ class MultiTurnPpoLearner(PpoLearner):
         # Fire validation once when we cross an eval interval boundary, AFTER syncing sampler weights
         # so evaluation uses up-to-date rollout parameters.
         try:
-          eval_every = self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+          eval_every = (
+              self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+          )
         except Exception:
           eval_every = 0
         if not hasattr(self, "_last_eval_check_step"):
@@ -972,7 +1061,9 @@ class MultiTurnPpoLearner(PpoLearner):
           prev_q = self._last_eval_check_step // eval_every
           curr_q = self._train_steps // eval_every
           if curr_q > prev_q and self._train_steps > 0:
-            print(f"[VALIDATION] Triggering (crossed interval) at train_step={self._train_steps} (eval_every_n_steps={eval_every})")
+            print(
+                f"[VALIDATION] Triggering (crossed interval) at train_step={self._train_steps} (eval_every_n_steps={eval_every})"
+            )
             self._validate(None)
           self._last_eval_check_step = self._train_steps
         # ─────────────────── END MODIFICATION ───────────────────

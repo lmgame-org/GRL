@@ -61,6 +61,7 @@ TRAIN_DATA_DIR = None
 TEST_DATA_DIR = None
 TRAIN_FRACTION = 1.0
 
+
 # --- Agent configuration (OmegaConf) ---
 # Use Tunix base YAML only as the single source of truth; compose defaults if present
 def _compose_with_defaults(cfg):
@@ -78,6 +79,7 @@ def _compose_with_defaults(cfg):
       except Exception:
         pass
   return out
+
 
 multi_turn_cfg = _compose_with_defaults(tunix_cfg)
 
@@ -118,7 +120,9 @@ except Exception:
   MESH = [(2, 2), ("fsdp", "tp")]
 # Use integer accumulation; at least 1
 # GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
-GRADIENT_ACCUMULATION_STEPS = int(tunix_cfg.training.gradient_accumulation_steps)
+GRADIENT_ACCUMULATION_STEPS = int(
+    tunix_cfg.training.gradient_accumulation_steps
+)
 
 # Rollout (GRPO generation) parameters (aligned with YAML)
 # Max Prompt Length: 4096
@@ -128,19 +132,29 @@ TOTAL_GENERATION_STEPS = int(tunix_cfg.rollout_runtime.total_generation_steps)
 TEMPERATURE = float(tunix_cfg.rollout_runtime.temperature_train)
 EVAL_TEMPERATURE = float(tunix_cfg.rollout_runtime.temperature_eval)
 TOP_P = float(tunix_cfg.rollout_runtime.top_p)
-TOP_K = None if tunix_cfg.rollout_runtime.top_k is None else int(tunix_cfg.rollout_runtime.top_k)
+TOP_K = (
+    None
+    if tunix_cfg.rollout_runtime.top_k is None
+    else int(tunix_cfg.rollout_runtime.top_k)
+)
 
 # Training loop setup
 NUM_BATCHES = int(200 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
 # Use YAML value if > 0, else fallback
 _ee = int(tunix_cfg.training.eval_every_n_steps)
-EVAL_EVERY_N_STEPS = _ee if _ee and _ee > 0 else int(10 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
+EVAL_EVERY_N_STEPS = (
+    _ee if _ee and _ee > 0 else int(10 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
+)
 # Debug validation use small batch size
 # NUM_BATCHES = 20
 # EVAL_EVERY_N_STEPS = 10
 NUM_EPOCHS = 1
 _max_steps_cfg = int(tunix_cfg.training.max_steps)
-MAX_STEPS = _max_steps_cfg if _max_steps_cfg and _max_steps_cfg > 0 else int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
+MAX_STEPS = (
+    _max_steps_cfg
+    if _max_steps_cfg and _max_steps_cfg > 0
+    else int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
+)
 CPU_OFFLOAD = False
 
 # Optimizer/scheduler
@@ -155,11 +169,16 @@ MAX_GRAD_NORM = float(tunix_cfg.training.max_grad_norm)
 RUN_ROOT = (BASE_DIR / "content").resolve()
 _default_intermediate = (RUN_ROOT / "intermediate_ckpt").resolve()
 _default_ckpts = (RUN_ROOT / "ckpts").resolve()
-INTERMEDIATE_CKPT_DIR = os.environ.get("GRL_INTERMEDIATE_CKPT_DIR", str(_default_intermediate))
+INTERMEDIATE_CKPT_DIR = os.environ.get(
+    "GRL_INTERMEDIATE_CKPT_DIR", str(_default_intermediate)
+)
 CKPT_DIR = os.environ.get("GRL_CKPT_DIR", str(_default_ckpts))
 SAVE_INTERVAL_STEPS = int(tunix_cfg.training.save_interval_steps)
 MAX_TO_KEEP = int(tunix_cfg.training.max_to_keep)
-print("Checkpoint dirs:", {"intermediate": INTERMEDIATE_CKPT_DIR, "ckpts": CKPT_DIR})
+print(
+    "Checkpoint dirs:",
+    {"intermediate": INTERMEDIATE_CKPT_DIR, "ckpts": CKPT_DIR},
+)
 
 # Inference presets removed for brevity
 
@@ -172,23 +191,31 @@ def get_dataset(_: str | None, split: str = "train"):
   # For multi-turn rollouts, return a lightweight empty iterator of fixed length
   del _
   del split
+
   class _Empty:
+
     def __iter__(self):
       for _ in range(NUM_BATCHES):
         yield {}
+
     def __getitem__(self, idx):
       return {}
+
     def __len__(self):
       return NUM_BATCHES
+
   return _Empty()
 
+
 dataset = get_dataset(TRAIN_DATA_DIR, "train")
+
 
 # ----- Get dummy reward function -----
 def _dummy_reward_fn(prompts, completions, **kwargs):
   # Return zero reward per example; length must match batch size
   batch_size = len(completions) if completions is not None else len(prompts)
   return [0.0] * batch_size
+
 
 # ======================= Print Config Summary =======================
 def _print_config_summary():
@@ -205,77 +232,90 @@ def _print_config_summary():
     yaml_cfg = tunix_cfg
   print("===== YAML (tunix_base.yaml) =====")
   print({
-      'ppo': {
-        'num_ppo_epochs': NUM_PPO_EPOCHS,
-        'mini_batch_size': MINI_BATCH_SIZE,
-        'gamma': GAMMA,
-        'gae_lambda': GAE_LAMBDA,
-        'beta': BETA,
-        'epsilon': EPSILON,
-        'vf_coef': VF_COEF,
-        'clip_range_value': CLIP_RANGE_VALUE,
-        'entropy_coeff': ENTROPY_COEFF,
-        'aggs_mode': ENTROPY_AGGS_MODE,
-        'clip_ratio_low': CLIP_RATIO_LOW,
-        'clip_ratio_high': CLIP_RATIO_HIGH,
-        'clip_ratio_c': CLIP_RATIO_C,
-        'kl_penalty_method': kl_penalty_method,
+      "ppo": {
+          "num_ppo_epochs": NUM_PPO_EPOCHS,
+          "mini_batch_size": MINI_BATCH_SIZE,
+          "gamma": GAMMA,
+          "gae_lambda": GAE_LAMBDA,
+          "beta": BETA,
+          "epsilon": EPSILON,
+          "vf_coef": VF_COEF,
+          "clip_range_value": CLIP_RANGE_VALUE,
+          "entropy_coeff": ENTROPY_COEFF,
+          "aggs_mode": ENTROPY_AGGS_MODE,
+          "clip_ratio_low": CLIP_RATIO_LOW,
+          "clip_ratio_high": CLIP_RATIO_HIGH,
+          "clip_ratio_c": CLIP_RATIO_C,
+          "kl_penalty_method": kl_penalty_method,
       },
-      'training': {
-        'gradient_accumulation_steps': GRADIENT_ACCUMULATION_STEPS,
-        'max_steps': MAX_STEPS,
-        'eval_every_n_steps': EVAL_EVERY_N_STEPS,
-        'actor_lr': ACTOR_LR,
-        'critic_lr': CRITIC_LR,
-        'b1': B1,
-        'b2': B2,
-        'weight_decay': WEIGHT_DECAY,
-        'max_grad_norm': MAX_GRAD_NORM,
-        'save_interval_steps': SAVE_INTERVAL_STEPS,
-        'max_to_keep': MAX_TO_KEEP,
+      "training": {
+          "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
+          "max_steps": MAX_STEPS,
+          "eval_every_n_steps": EVAL_EVERY_N_STEPS,
+          "actor_lr": ACTOR_LR,
+          "critic_lr": CRITIC_LR,
+          "b1": B1,
+          "b2": B2,
+          "weight_decay": WEIGHT_DECAY,
+          "max_grad_norm": MAX_GRAD_NORM,
+          "save_interval_steps": SAVE_INTERVAL_STEPS,
+          "max_to_keep": MAX_TO_KEEP,
       },
-      'rollout_runtime': {
-        'max_prompt_length': MAX_PROMPT_LENGTH,
-        'total_generation_steps': TOTAL_GENERATION_STEPS,
-        'temperature_train': TEMPERATURE,
-        'temperature_eval': EVAL_TEMPERATURE,
-        'top_p': TOP_P,
-        'top_k': TOP_K,
+      "rollout_runtime": {
+          "max_prompt_length": MAX_PROMPT_LENGTH,
+          "total_generation_steps": TOTAL_GENERATION_STEPS,
+          "temperature_train": TEMPERATURE,
+          "temperature_eval": EVAL_TEMPERATURE,
+          "top_p": TOP_P,
+          "top_k": TOP_K,
       },
-      'rollout': {
-        'agent_group_num': group_nums,
-        'agent_group_size': group_sizes,
-        'validation_agent_group_num': list(multi_turn_cfg.rollout.validation_agent_group_num) if hasattr(multi_turn_cfg.rollout, 'validation_agent_group_num') else None,
-        'validation_agent_group_size': list(multi_turn_cfg.rollout.validation_agent_group_size) if hasattr(multi_turn_cfg.rollout, 'validation_agent_group_size') else None,
-        'use_turn_scores': bool(multi_turn_cfg.rollout.use_turn_scores),
-        'rollout_filter_ratio': filter_ratio,
-        'rollout_filter_type': str(multi_turn_cfg.rollout.rollout_filter_type),
-        'reward_normalization': {
-          'grouping': str(multi_turn_cfg.rollout.reward_normalization.grouping),
-          'method': str(multi_turn_cfg.rollout.reward_normalization.method),
-        },
+      "rollout": {
+          "agent_group_num": group_nums,
+          "agent_group_size": group_sizes,
+          "validation_agent_group_num": list(
+              multi_turn_cfg.rollout.validation_agent_group_num
+          )
+          if hasattr(multi_turn_cfg.rollout, "validation_agent_group_num")
+          else None,
+          "validation_agent_group_size": list(
+              multi_turn_cfg.rollout.validation_agent_group_size
+          )
+          if hasattr(multi_turn_cfg.rollout, "validation_agent_group_size")
+          else None,
+          "use_turn_scores": bool(multi_turn_cfg.rollout.use_turn_scores),
+          "rollout_filter_ratio": filter_ratio,
+          "rollout_filter_type": str(
+              multi_turn_cfg.rollout.rollout_filter_type
+          ),
+          "reward_normalization": {
+              "grouping": str(
+                  multi_turn_cfg.rollout.reward_normalization.grouping
+              ),
+              "method": str(multi_turn_cfg.rollout.reward_normalization.method),
+          },
       },
-      'derived': {
-        'total_agents': total_agents,
-        'training_batch_size': TRAINING_BATCH_SIZE,
-        'num_batches': NUM_BATCHES,
+      "derived": {
+          "total_agents": total_agents,
+          "training_batch_size": TRAINING_BATCH_SIZE,
+          "num_batches": NUM_BATCHES,
       },
-      'mesh': {
-        'shape': MESH[0],
-        'axes': MESH[1],
+      "mesh": {
+          "shape": MESH[0],
+          "axes": MESH[1],
       },
-      'model': { 'repo_id': repo_id },
-      'paths': {
-        'ckpt_dir': CKPT_DIR,
-        'intermediate_ckpt_dir': INTERMEDIATE_CKPT_DIR,
-      }
+      "model": {"repo_id": repo_id},
+      "paths": {
+          "ckpt_dir": CKPT_DIR,
+          "intermediate_ckpt_dir": INTERMEDIATE_CKPT_DIR,
+      },
   })
+
 
 _print_config_summary()
 
 
-
 # ======================= Prepare Policy Models & Critic Models =======================
+
 
 def download_model_weights(repo_id: str, local_dir: str) -> str:
   """Download model weights and tokenizer assets; return the resolved path."""
@@ -283,12 +323,12 @@ def download_model_weights(repo_id: str, local_dir: str) -> str:
       repo_id=repo_id,
       local_dir=local_dir,
       allow_patterns=[
-        "*.safetensors",
-        "*.json",
-        "tokenizer.*",
-        "*.model",
-        "vocab*",
-        "merges.txt",
+          "*.safetensors",
+          "*.json",
+          "tokenizer.*",
+          "*.model",
+          "vocab*",
+          "merges.txt",
       ],
   )
   print("Files downloaded to:", downloaded)
@@ -340,13 +380,17 @@ def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
   Ensures the returned module is a distinct Python object so optimizer updates on
   the actor do not affect the frozen reference.
   """
-  abs_mod: nnx.Module = nnx.eval_shape(lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0)))
+  abs_mod: nnx.Module = nnx.eval_shape(
+      lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+  )
   gdef, _ = nnx.split(abs_mod)
   src_state = nnx.state(src_module)
   # Best-effort: ensure arrays are placed on the provided mesh sharding
   try:
     target_sharding = nnx.get_named_sharding(src_state, mesh)
-    src_state = jax.tree.map(lambda x, s: jax.device_put(x, s), src_state, target_sharding)
+    src_state = jax.tree.map(
+        lambda x, s: jax.device_put(x, s), src_state, target_sharding
+    )
   except Exception:
     pass
   return nnx.merge(gdef, src_state)
@@ -513,28 +557,39 @@ At this point, we have:
 #
 # critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
+
 # --- Critic: simple Linear(H->1) head (no bias) ---
 class Qwen2CriticTokenClass(nnx.Module):
+
   def __init__(self, backbone: nnx.Module, rngs: nnx.Rngs):
     self.backbone = backbone
-    hidden_dim = getattr(self.backbone.config, "hidden_size", getattr(self.backbone.config, "embed_dim"))
-    self.classifier = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs)
+    hidden_dim = getattr(
+        self.backbone.config,
+        "hidden_size",
+        getattr(self.backbone.config, "embed_dim"),
+    )
+    self.classifier = nnx.Linear(
+        in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs
+    )
 
   def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
     _ = self.backbone(
-      input_tokens,
-      positions=positions,
-      cache=cache,
-      attention_mask=attention_mask,
-      output_hidden_states=True,
-      **kwargs,
+        input_tokens,
+        positions=positions,
+        cache=cache,
+        attention_mask=attention_mask,
+        output_hidden_states=True,
+        **kwargs,
     )
     h = nnx.pop(self.backbone, nnx.Intermediate)["all_hidden_states"].value
     if isinstance(h, (list, tuple)):
       h = h[-1]
     return self.classifier(h)
 
-def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
+
+def get_critic_model(
+    _model_config, _ref_model: nnx.Module, _mesh
+) -> nnx.Module:
   """Builds a critic from ref backbone and shards it to the provided mesh."""
   abs_mod: nnx.Module = nnx.eval_shape(
       lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
@@ -551,12 +606,17 @@ def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module
   key = jax.random.PRNGKey(seed)
   kshape = crit_state["classifier"]["kernel"].shape
   kdtype = crit_state["classifier"]["kernel"].dtype
-  crit_state["classifier"]["kernel"] = jax.random.normal(key, kshape, dtype=kdtype) * 0.02
+  crit_state["classifier"]["kernel"] = (
+      jax.random.normal(key, kshape, dtype=kdtype) * 0.02
+  )
 
   # Shard once at the end
   crit_sharding = nnx.get_named_sharding(crit_state, _mesh)
-  crit_state = jax.tree.map(lambda x, s: jax.device_put(x, s), crit_state, crit_sharding)
+  crit_state = jax.tree.map(
+      lambda x, s: jax.device_put(x, s), crit_state, crit_sharding
+  )
   return nnx.merge(crit_graph_def, crit_state)
+
 
 critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
@@ -579,11 +639,13 @@ try:
 except Exception:
   pass
 
+
 # Reset checkpoint and tensorboard directories to avoid auto-restore/mixing logs
 def _reset_dir(path: str):
   if os.path.exists(path):
     shutil.rmtree(path, ignore_errors=True)
   os.makedirs(path, exist_ok=True)
+
 
 _reset_dir(CKPT_DIR)
 _reset_dir(TB_LOG_DIR)
@@ -638,14 +700,14 @@ cluster_config = rl_cluster_lib.ClusterConfig(
         rl_cluster_lib.Role.REFERENCE: mesh,
         rl_cluster_lib.Role.ROLLOUT: mesh,
     },
-    rollout_engine='vanilla',
+    rollout_engine="vanilla",
     offload_to_cpu=CPU_OFFLOAD,
     training_config=rl_cluster_lib.RLTrainingConfig(
         actor_optimizer=actor_optimizer,
         critic_optimizer=critic_optimizer,
         eval_every_n_steps=EVAL_EVERY_N_STEPS,
         max_steps=MAX_STEPS,
-        gradient_accumulation_steps= GRADIENT_ACCUMULATION_STEPS,
+        gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
         # metrics logging
         metrics_logging_options=metrics_logging_options,
         # checkpoint saving
@@ -711,12 +773,10 @@ ppo_trainer = PpoLearnerExp(
 )
 
 with mesh:
-    ppo_trainer.train(dataset)
+  ppo_trainer.train(dataset)
 
 
 try:
-    wandb.finish()
+  wandb.finish()
 except Exception:
-    pass
-
-
+  pass
