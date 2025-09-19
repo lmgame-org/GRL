@@ -14,6 +14,7 @@
 
 [![Github](https://img.shields.io/badge/GRL-000000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/lmgame-org/GRL)
 [![Website](https://img.shields.io/badge/Site-%23000000.svg?style=for-the-badge&logo=semanticweb&logoColor=white)](https://lmgame.org) 
+[![Blog](https://img.shields.io/badge/Blog-1DA1F2?style=for-the-badge&logo=rss&logoColor=white)](https://lmgame.org/#/blog/grl)
 [![arXiv](https://img.shields.io/badge/arXiv-2505.15146-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2505.15146)
 [![X (Twitter)](https://img.shields.io/badge/Follow-HaoAILab-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/haoailab)
 [![Discord](https://img.shields.io/badge/Join%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/x3dTHfyRZE)
@@ -27,7 +28,7 @@ GRL (Game Reinforcement Learning) is an open‑source framework that post‑trai
 ## News
 <strong>[2025/09/29]</strong> 🚀 Tunix integration: PPO multi‑turn training now runs on TPU via JAX, with a Sokoban PPO training example. For more details, see [Tunix](https://github.com/google/tunix), a JAX‑native LLM post‑training library with TPU support.
 
-<strong>[2025/08/27]</strong> 📢 We release GRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning.
+<strong>[2025/08/27]</strong> 📢 We release GRL to reproduce the paper’s results and to demonstrate general gains across benchmarks by post‑training LLMs via reinforcement learning. Read the blog post [here](https://lmgame.org/#/blog/grl).
 
 ## 📖 Table of Contents
 
