@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Train script for PPO on GSM8K
-# Runs grl/train_ppo_gsm8k_example.py and logs output to cache/ like quick_train_qwen_halfb.sh
+# Train script for multi-turn PPO (experimental)
+# Runs grl/tunix_ppo_train.py and logs output to cache/
 
 set -euo pipefail
 
@@ -15,9 +15,9 @@ LOG_FILE="cache/train_ppo_multi_turn_$(date +"%Y%m%d_%H%M%S").log"
 echo "Logging to: $LOG_FILE"
 
 
-PY_SCRIPT="$PROJECT_ROOT/grl/train_ppo_multi_turn_example.py"
+PY_SCRIPT="$PROJECT_ROOT/grl/tunix_ppo_train.py"
 if [ ! -f "$PY_SCRIPT" ]; then
-  echo "Error: Python script not found: $PY_SCRIPT" | tee -a "$LOG_FILE"
+  echo "Error: Tunix PPO train script not found: $PY_SCRIPT" | tee -a "$LOG_FILE"
   exit 1
 fi
 

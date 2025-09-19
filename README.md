@@ -43,7 +43,8 @@ GRL (Game Reinforcement Learning) is an open‑source framework that post‑trai
   - [Reproduce Training Results (Verl)](#reproduce-training-results-verl)
 - [Supported Games and Agents](#supported-games-and-agents)
 - [Hardware Configuration](#hardware-configuration)
-  - [TPU Configurations](#tpu-configurations)
+  - [GPU Configurations (Torch + VERL)](#gpu-configurations-torch--verl)
+  - [TPU Configurations (JAX + Tunix)](#tpu-configurations-jax--tunix)
 - [Documentation](#documentation)
 - [Acknowledgments](#acknowledgments)
 - [Citation](#citation)
@@ -114,35 +115,9 @@ bash scripts/install_dataset.sh --all
 
 Quickly run an end‑to‑end multi‑turn PPO rollout + training loop with Tunix (Qwen2.5‑0.5B‑Instruct on Sokoban). This uses minimal defaults and logs metrics to W&B.
 
-#### 1) Clone and enter repo
+#### Run the quick test (defaults to Qwen2.5‑0.5B; supports 4 TPU v4 with mesh (2,2))
 ```bash
-git clone --recurse-submodules https://github.com/lmgame-org/GRL.git
-cd GRL
-git checkout -b tunix_integration_dev_test origin/tunix_integration_dev_test
-```
-
-#### 2) Create environment
-```bash
-conda create --name grl python=3.11 -y
-conda activate grl
-```
-
-#### 3) Install dependencies (Tunix mode)
-```bash
-bash scripts/install_submodules.sh --tunix
-pip install -e .
-```
-
-#### 4) Set required environment variables
-```bash
-export WANDB_API_KEY=your_wandb_api_key     # or: export WANDB_MODE=disabled
-export WANDB_ENTITY=your_wandb_entity       # e.g., your W&B org/user
-export HF_TOKEN=your_huggingface_token      # needed to download model weights
-```
-
-#### 5) Launch the quick test (defaults to Qwen2.5‑0.5B; supports 4 TPU v4 with mesh (2,2))
-```bash
-bash train_ppo_multi_turn_script_exp.sh
+bash tunix_quick_training_example.sh
 ```
 
 #### Adjust training hyperparameters (tunix_base.yaml)
@@ -161,12 +136,12 @@ Notes:
 
 ### Reproduce Training Results (Verl)
 
-Uses VERL (PyTorch) on GPU.
+Uses Verl (PyTorch) on GPU.
 
 Train on 6×6 (1‑box) Sokoban and evaluate transferability to Tetris, Blocksworld, and GSM8K.
 
 ```bash
-bash quick_train_qwen_halfb.sh
+bash verl_quick_training_example.sh
 ```
 
 ### General gains of LLM ability from game RL training (paper‑reported results)
@@ -196,7 +171,12 @@ bash examples/tetris_ppo/qwen_7b.sh
 
 ### Hardware Configuration
 
-The framework is pre‑configured for different GPU setups:
+GRL supports both GPU and TPU training backends:
+
+- GPU (Torch + VERL): PyTorch-based training on NVIDIA GPUs via VERL.
+- TPU (JAX + Tunix): JAX-based training on Google TPU via Tunix.
+
+### GPU Configurations (Torch + VERL)
 
 | GPU Type | GPUs | Agent Groups | Group Size | Total Agents | Default Model | Task |
 |---|---:|---:|---:|---:|---|---|
@@ -208,7 +188,7 @@ The framework is pre‑configured for different GPU setups:
 
 
 
-### TPU Configurations
+### TPU Configurations (JAX + Tunix)
 
 | TPU Type | Chips | Mesh | Agent Groups | Group Size | Total Agents | Default Model | Task |
 |---|---:|---|---:|---:|---:|---|---|
