@@ -29,6 +29,79 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Environment variables for selective installation
+INSTALL_VERL=${INSTALL_VERL:-0}
+INSTALL_WEBSHOP=${INSTALL_WEBSHOP:-0}
+INSTALL_TUNIX=${INSTALL_TUNIX:-0}
+INSTALL_ALL_SUBMODULES=${INSTALL_ALL_SUBMODULES:-0}
+
+# Parse command line arguments
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --verl)
+                INSTALL_VERL=1
+                shift
+                ;;
+            --webshop)
+                INSTALL_WEBSHOP=1
+                shift
+                ;;
+            --tunix)
+                INSTALL_TUNIX=1
+                shift
+                ;;
+            --all)
+                INSTALL_ALL_SUBMODULES=1
+                shift
+                ;;
+            -h|--help)
+                echo "Submodule Installation Script for grl"
+                echo "Usage: $0 [OPTIONS]"
+                echo ""
+                echo "Options:"
+                echo "  --verl      Install verl submodule and dependencies"
+                echo "  --webshop   Install webshop submodule and dependencies"
+                echo "  --tunix     Install tunix submodule and dependencies"
+                echo "  --all       Install all submodules and dependencies"
+                echo "  -h, --help  Show this help message"
+                echo ""
+                echo "Environment variables:"
+                echo "  INSTALL_VERL=1              Install verl submodule"
+                echo "  INSTALL_WEBSHOP=1           Install webshop submodule"
+                echo "  INSTALL_TUNIX=1             Install tunix submodule"
+                echo "  INSTALL_ALL_SUBMODULES=1    Install all submodules"
+                echo ""
+                echo "Examples:"
+                echo "  $0 --verl --tunix          # Install verl and tunix only"
+                echo "  $0 --all                   # Install all submodules"
+                echo "  INSTALL_VERL=1 $0          # Install verl using env var"
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                echo "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+
+    # Set flags for --all
+    if [[ "$INSTALL_ALL_SUBMODULES" == 1 ]]; then
+        INSTALL_VERL=1
+        INSTALL_WEBSHOP=1
+        INSTALL_TUNIX=1
+    fi
+
+    # If no specific submodules requested, default to all (backward compatibility)
+    if [[ "$INSTALL_VERL" == 0 && "$INSTALL_WEBSHOP" == 0 && "$INSTALL_TUNIX" == 0 ]]; then
+        print_warning "No specific submodules requested, installing all for backward compatibility"
+        INSTALL_VERL=1
+        INSTALL_WEBSHOP=1
+        INSTALL_TUNIX=1
+    fi
+}
+
 # Check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -77,24 +150,39 @@ setup_submodules() {
     print_step "Updating git submodules..."
     git submodule update --recursive
     
-    # Verify verl directory
-    if [ -d "verl" ] && [ "$(ls -A verl)" ]; then
-        print_success "verl submodule successfully downloaded"
-    else
-        print_error "Failed to download verl submodule"
-        exit 1
+    # Verify submodules based on what was requested
+    if [[ "$INSTALL_VERL" == 1 ]]; then
+        if [ -d "verl" ] && [ "$(ls -A verl)" ]; then
+            print_success "verl submodule successfully downloaded"
+        else
+            print_error "Failed to download verl submodule"
+            exit 1
+        fi
     fi
     
-    # Verify webshop directory
-    if [ -d "external/webshop-minimal" ] && [ "$(ls -A external/webshop-minimal)" ]; then
-        print_success "webshop-minimal submodule successfully downloaded"
-    else
-        print_warning "webshop-minimal submodule not found or empty"
+    if [[ "$INSTALL_WEBSHOP" == 1 ]]; then
+        if [ -d "external/webshop-minimal" ] && [ "$(ls -A external/webshop-minimal)" ]; then
+            print_success "webshop-minimal submodule successfully downloaded"
+        else
+            print_warning "webshop-minimal submodule not found or empty"
+        fi
+    fi
+    
+    if [[ "$INSTALL_TUNIX" == 1 ]]; then
+        if [ -d "tunix" ] && [ "$(ls -A tunix)" ]; then
+            print_success "tunix submodule successfully downloaded"
+        else
+            print_warning "tunix submodule not found or empty"
+        fi
     fi
 }
 
 # Install verl in editable mode (includes torch dependencies)
 install_verl() {
+    if [[ "$INSTALL_VERL" != 1 ]]; then
+        return
+    fi
+    
     print_step "Installing verl framework..."
     
     if [ ! -d "verl" ]; then
@@ -108,6 +196,64 @@ install_verl() {
     
     print_success "verl installed in editable mode"
 }
+
+# Install tunix (JAX-based LLM post-training library)
+install_tunix() {
+    if [[ "$INSTALL_TUNIX" != 1 ]]; then
+        return
+    fi
+
+    print_step "Installing tunix framework..."
+
+    # Remove any previously installed tunix to avoid path shadowing
+    pip uninstall -y tunix >/dev/null 2>&1 || true
+
+    # ---- Preferred path: local submodule (does not affect caller's CWD) ----
+    if [[ -d "tunix" ]]; then
+        if [[ -f "tunix/pyproject.toml" || -f "tunix/setup.py" ]]; then
+            print_step "Installing tunix from local submodule (editable)"
+            if ( cd tunix && pip install -e . ); then
+                print_success "tunix installed from local submodule"
+                return
+            else
+                print_warning "Local editable install failed; will try .gitmodules URL (if configured)"
+            fi
+        else
+            print_warning "tunix/ missing build files (pyproject.toml/setup.py); will try .gitmodules URL"
+        fi
+    else
+        print_warning "tunix submodule directory not found; will try .gitmodules URL"
+    fi
+
+    # ---- Fallback: install from .gitmodules URL (if present) ----
+    TUNIX_URL=$(git config --file .gitmodules --get submodule.tunix.url || echo "")
+    TUNIX_BRANCH=$(git config --file .gitmodules --get submodule.tunix.branch || echo "")
+
+    if [[ -n "$TUNIX_URL" ]]; then
+        if [[ -n "$TUNIX_BRANCH" ]]; then
+            print_step "Installing tunix from submodule URL: $TUNIX_URL (branch: $TUNIX_BRANCH)"
+            if pip install "git+$TUNIX_URL@$TUNIX_BRANCH"; then
+                print_success "tunix installed from $TUNIX_URL@$TUNIX_BRANCH"
+                return
+            else
+                print_warning "Failed to install tunix from $TUNIX_URL@$TUNIX_BRANCH"
+            fi
+        else
+            print_step "Installing tunix from submodule URL: $TUNIX_URL"
+            if pip install "git+$TUNIX_URL"; then
+                print_success "tunix installed from $TUNIX_URL"
+                return
+            else
+                print_warning "Failed to install tunix from $TUNIX_URL"
+            fi
+        fi
+    fi
+
+    # ---- Hard failure if neither local nor URL works ----
+    print_error "Failed to install tunix. Ensure submodule is checked out and has build files (pyproject.toml or setup.py)."
+    exit 1
+}
+
 
 # Install WebShop prerequisites
 install_webshop_prereqs() {
@@ -137,7 +283,9 @@ install_webshop_prereqs() {
 
 # Install webshop
 install_webshop() {
-    # Check if user wants webshop (default: yes)
+    if [[ "$INSTALL_WEBSHOP" != 1 ]]; then
+        return
+    fi
     
     install_webshop_prereqs
     print_step "Installing WebShop-minimal (may take a few minutes)…"
@@ -169,6 +317,10 @@ install_webshop() {
 # Note: torch is installed as part of verl dependencies
 # No separate torch installation needed
 verify_torch_from_verl() {
+    if [[ "$INSTALL_VERL" != 1 ]]; then
+        return
+    fi
+    
     print_step "Verifying torch installation from verl..."
     
     if python -c "import torch; print(f'torch {torch.__version__} available')" 2>/dev/null; then
@@ -184,28 +336,52 @@ verify_torch_from_verl() {
 verify_stage1() {
     print_step "Verifying Stage 1 installation..."
     
-    # Critical packages that must be available for Stage 2
-    CRITICAL_PACKAGES=("torch")
+    # Track if any verification failed
+    verification_failed=0
     
-    for package in "${CRITICAL_PACKAGES[@]}"; do
-        if python -c "import $package" 2>/dev/null; then
-            print_success "$package ✓"
+    # Verify torch only if verl was installed
+    if [[ "$INSTALL_VERL" == 1 ]]; then
+        if python -c "import torch" 2>/dev/null; then
+            print_success "torch ✓"
         else
-            print_error "$package ✗ - Stage 2 will likely fail"
-            exit 1
+            print_error "torch ✗ - Stage 2 will likely fail"
+            verification_failed=1
         fi
-    done
+        
+        # Test verl import specifically (it might have different import structure)
+        if python -c "import verl" 2>/dev/null; then
+            print_success "verl ✓"
+        elif python -c "from verl import *" 2>/dev/null; then
+            print_success "verl ✓ (wildcard import)"
+        elif python -c "import sys; sys.path.append('verl'); import verl" 2>/dev/null; then
+            print_success "verl ✓ (path adjusted)"
+        else
+            print_warning "verl import test failed, but installation completed"
+            print_warning "This may be normal if verl uses a different import structure"
+        fi
+    fi
     
-    # Test verl import specifically (it might have different import structure)
-    if python -c "import verl" 2>/dev/null; then
-        print_success "verl ✓"
-    elif python -c "from verl import *" 2>/dev/null; then
-        print_success "verl ✓ (wildcard import)"
-    elif python -c "import sys; sys.path.append('verl'); import verl" 2>/dev/null; then
-        print_success "verl ✓ (path adjusted)"
-    else
-        print_warning "verl import test failed, but installation completed"
-        print_warning "This may be normal if verl uses a different import structure"
+    # Verify tunix if installed
+    if [[ "$INSTALL_TUNIX" == 1 ]]; then
+        if python -c "import tunix" 2>/dev/null; then
+            print_success "tunix ✓"
+        else
+            print_warning "tunix import test failed, but installation completed"
+            print_warning "This may be normal if tunix uses a different import structure"
+        fi
+    fi
+    
+    # Verify webshop dependencies if installed
+    if [[ "$INSTALL_WEBSHOP" == 1 ]]; then
+        if python -c "import faiss" 2>/dev/null; then
+            print_success "faiss ✓"
+        else
+            print_warning "faiss not available - WebShop may not work properly"
+        fi
+    fi
+    
+    if [[ "$verification_failed" == 1 ]]; then
+        exit 1
     fi
     
     print_success "Stage 1 verification completed - ready for 'pip install -e .'"
@@ -284,15 +460,26 @@ PY
 
 # Main function
 main() {
+    # Parse command line arguments first
+    parse_arguments "$@"
+    
     echo "=========================================="
     echo "grl Stage 1: Submodule Installation"
     echo "Started at: $(date)"
     echo "=========================================="
     
+    # Show what will be installed
+    echo "Installation plan:"
+    [[ "$INSTALL_VERL" == 1 ]] && echo "  ✓ verl framework"
+    [[ "$INSTALL_WEBSHOP" == 1 ]] && echo "  ✓ webshop-minimal"
+    [[ "$INSTALL_TUNIX" == 1 ]] && echo "  ✓ tunix framework"
+    echo ""
+    
     check_prerequisites
     setup_submodules
     install_verl
     install_webshop
+    install_tunix
     verify_torch_from_verl
     verify_stage1
     # prepare_stage2_installation

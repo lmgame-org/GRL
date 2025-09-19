@@ -90,8 +90,8 @@ docs/_build/
 # PyBuilder
 target/
 
-# IPython Notebook
-.ipynb_checkpoints
+# # IPython Notebook
+# .ipynb_checkpoints
 
 # pyenv
 .python-version
@@ -142,3 +142,9 @@ setup_log.txt
 tmp/
 
 datasets/
+
+qwen_models/
+
+content/
+
+setup.log

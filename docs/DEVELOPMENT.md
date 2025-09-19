@@ -42,7 +42,30 @@ Location: `trainer/agent_trainer.py`
 - [✅] Test general ability across all envs
 
 #### 2.5 Trainers & Extensibility
-- [ ] JAX PPO trainer integration
+- [ ] JAX PPO trainer integration ([Tunix Integration Plan](TUNIX_INTEGRATION.md))
+  - [✅] write tunix_sync_multi_turn_rollout.py
+    - [✅] finish tunix multi turn rollout part
+    - [✅] verify the final results ids
+  - [✅] integrate it with tunix_agent_trianer.py
+  - [✅] test the training workflow in tunix_train.py
+    - [✅] draft a runnable tunix multi-turn rl training
+    - [✅] wandb metric visualization
+    - [✅] validation implementation
+      - [✅] draft validation rollout
+      - [✅] understand tunix trianing and validtion logic for better integration
+      - [✅] solve metric logging problem
+    - [✅] align with hyperparameters 
+    - [✅] research ppo update
+    - [ ] verify verl wandb logging implementation
+    - [ ] try critic model automated surgery again
+    - [ ] wrap up tunix training code and write instruction
+      - [✅] critic model building + critic tpu allocation
+      - [✅] reward score allocation
+      - [✅] prompt ids and completions ids from input ids (pattern analysis)
+      - [✅] fsdp + tp to reduce memory
+      - [ ] try cpu_offload;
+      - [ ] calculate memory consumption
+      - [ ] abstract a uniform yaml config file
 - [ ] Abstract the framework to integrate different trainers
 
 #### 2.6 Tooling & Build
