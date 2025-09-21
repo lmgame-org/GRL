@@ -205,6 +205,21 @@ install_tunix() {
 
     print_step "Installing tunix framework..."
 
+    # Ensure tunix submodule is on the configured branch (default to main if unspecified)
+    TUNIX_BRANCH=$(git config --file .gitmodules --get submodule.tunix.branch || echo "")
+    if [[ -z "$TUNIX_BRANCH" ]]; then
+        TUNIX_BRANCH="main"
+    fi
+    # Sync and init tunix submodule if needed
+    git submodule sync -- tunix >/dev/null 2>&1 || true
+    git submodule update --init tunix >/dev/null 2>&1 || true
+    if [ -d "tunix/.git" ]; then
+        print_step "Checking out tunix branch: $TUNIX_BRANCH"
+        git -C tunix fetch origin "$TUNIX_BRANCH" >/dev/null 2>&1 || true
+        git -C tunix checkout -B "$TUNIX_BRANCH" "origin/$TUNIX_BRANCH" >/dev/null 2>&1 || git -C tunix checkout "$TUNIX_BRANCH" >/dev/null 2>&1 || true
+        git -C tunix reset --hard "origin/$TUNIX_BRANCH" >/dev/null 2>&1 || true
+    fi
+
     # Remove any previously installed tunix to avoid path shadowing
     pip uninstall -y tunix >/dev/null 2>&1 || true
 
