@@ -1,20 +1,30 @@
-"""Thin wrapper around Tunix PPO to allow later customization.
+"""Experimental trainer classes extending PPO components.
 
-This module exposes `TrainExample` and `PpoConfig` directly from Tunix,
-and provides a subclass of `PpoLearner` for incremental overrides.
+This module imports `PpoLearner`, `PpoConfig`, and `TrainExample` from
+`tunix.rl.ppo.ppo_learner` and provides thin subclasses for experimentation.
 """
 
 from __future__ import annotations
 
+# Standard library
 from concurrent import futures
 import dataclasses
 from typing import Callable, Dict, Iterable, Iterator, List, Sequence
 
+# Third-party
 import flax
 from flax import nnx
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike  # pylint: disable=g-importing-member
+import numpy as np
+
+# Local application
+from tunix.rl.ppo.ppo_learner import (
+    PpoLearner,
+    PpoConfig,
+    TrainExample,
+)
 from tunix.rl import common
 from tunix.rl import rl_cluster as rl_cluster_lib
 from tunix.rl import utils
@@ -22,20 +32,37 @@ from tunix.rl.ppo import ppo_helpers
 from tunix.rl.queue import data_queue as queue_lib
 from tunix.sft import metrics_logger
 from grl.rollout.tunix_sync_multi_turn_rollout import SyncMultiTurnRollout
-import numpy as np
-import jax.nn as jnn
 
-# Re-exported wrappers inherit from Tunix PPO implementations
-from tunix.rl.ppo.ppo_learner import (
-    TrainExample as BaseTrainExample,  # re-export base
-    PpoConfig as BasePpoConfig,  # re-export base
-    PpoLearner,
-)
+_TrainingInputT = Dict[str, List[str] | ArrayLike]
 
 
-# Extend base types with entropy configuration used only by the custom loss
+def _assert_float32(x, name: str):
+  """Assert that array-like `x` is float32. Converts to jnp.array for robust dtype access."""
+  arr = jnp.asarray(x)
+  assert (
+      arr.dtype == jnp.float32
+  ), f"{name} dtype must be float32, got {arr.dtype}"
+
+
+@dataclasses.dataclass(slots=True, kw_only=True)
+class PpoConfigExp(PpoConfig):
+  """Subclass of `PpoConfig` for experimental overrides."""
+
+  # KL penalty method for reward shaping: one of {"kl","k1","abs","mse","k2","low_var_kl","k3"}
+  kl_penalty_method: str = "k1"
+  # Entropy regularization
+  entropy_coeff: float = 0.0
+  aggs_mode: str = "token-mean"
+  # ===== MODIFICATION: Asymmetric and dual-clip PPO hyperparameters =====
+  clip_ratio_low: float = 0.2
+  clip_ratio_high: float = 0.2
+  clip_ratio_c: float = 1.0  # >1.0 enables dual-clip; e.g., 3.0
+
+
 @flax.struct.dataclass(frozen=True)
-class TrainExample(BaseTrainExample):
+class TrainExampleExp(TrainExample):
+  """Extended train example with entropy fields for experimental loss."""
+
   entropy_coeff: jax.Array | float = flax.struct.field(
       pytree_node=False, default=0.0
   )
@@ -46,291 +73,20 @@ class TrainExample(BaseTrainExample):
   clip_ratio_high: jax.Array | float = flax.struct.field(
       pytree_node=False, default=0.2
   )
-  clip_ratio_c: jax.Array | float | None = flax.struct.field(
-      pytree_node=False, default=None
+  clip_ratio_c: jax.Array | float = flax.struct.field(
+      pytree_node=False, default=1.0
   )
 
 
-@dataclasses.dataclass(slots=True, kw_only=True)
-class PpoConfig(BasePpoConfig):
-  entropy_coeff: float = 0.0
-  aggs_mode: str = "token-mean"
-  # VERL-style asymmetric clipping and optional dual-clip
-  clip_ratio_low: float = 0.2
-  clip_ratio_high: float = 0.28
-  clip_ratio_c: float | None = None
-
-
-_TrainingInputT = Dict[str, List[str] | ArrayLike]
-
-# prompts, completions, **kargs -> rewards
-RewardFn = Callable[..., List[float]]
-
-__all__ = [
-    "TrainExample",
-    "PpoConfig",
-    "PpoLearner",
-]
-
-
-@jax.jit
-def compute_gae_advantages(
-    rewards: jax.Array,
-    values: jax.Array,
-    completion_mask: jax.Array,
-    gamma: float,
-    gae_lambda: float,
-) -> tuple[jax.Array, jax.Array]:
-  """Masked GAE, aligned with TRL-style implementation.
-
-  This version respects variable-length sequences using a mask. After the
-  end-of-sequence (where the mask is 0), the recursion for both the bootstrap
-  value and the advantage accumulator is held constant (no updates).
-
-  Args:
-    rewards: Array of shape [B, T] containing per-token rewards.
-    values: Array of shape [B, T] containing value estimates V(s_t).
-    completion_mask: Boolean or 0/1 mask of shape [B, T]; positions after EOS
-      must be 0.
-    gamma: Discount factor.
-    gae_lambda: GAE lambda parameter.
-
-  Returns:
-    A tuple (advantages, returns), each of shape [B, T].
-  """
-  B, T = rewards.shape
-  mask = completion_mask.astype(values.dtype)
-
-  def scan_step(carry, xs):
-    next_values_carry, last_gae_carry = carry  # each [B]
-    reward_t, value_t, mask_t = xs  # each [B]
-
-    delta_t = reward_t + gamma * next_values_carry - value_t
-    last_gae_unmasked = delta_t + gamma * gae_lambda * last_gae_carry
-
-    # Apply mask gating (hold carries when mask_t == 0)
-    next_values_new = value_t * mask_t + (1.0 - mask_t) * next_values_carry
-    last_gae_new = last_gae_unmasked * mask_t + (1.0 - mask_t) * last_gae_carry
-
-    return (next_values_new, last_gae_new), last_gae_new
-
-  init_carry = (
-      jnp.zeros((B,), dtype=values.dtype),
-      jnp.zeros((B,), dtype=values.dtype),
-  )
-  xs = (jnp.transpose(rewards), jnp.transpose(values), jnp.transpose(mask))
-
-  (_, _), advantages_T = jax.lax.scan(
-      scan_step,
-      init=init_carry,
-      xs=xs,
-      reverse=True,
-  )
-
-  advantages = jnp.transpose(advantages_T)
-  returns = advantages + values
-  return advantages, returns
-
-
-# (Entropy helpers removed)
-@jax.jit
-def entropy_from_logits(logits: jax.Array) -> jax.Array:
-  """Per-token categorical entropy from logits; shape [..., V] -> [...]."""
-  probs = jnn.softmax(logits, axis=-1)
-  logsumexp = jax.nn.logsumexp(logits, axis=-1)
-  expected_logits = jnp.sum(probs * logits, axis=-1)
-  return logsumexp - expected_logits
-
-
-def agg_loss(
-    loss_mat: jax.Array,
-    loss_mask: jax.Array,
-    loss_agg_mode: str = "token-mean",
-) -> jax.Array:
-  """Aggregate the loss matrix into a scalar.
-
-  Args:
-    loss_mat: [B, T]
-    loss_mask: [B, T]
-    loss_agg_mode: aggregation mode
-  Returns:
-    scalar loss
-  """
-  loss_mask = loss_mask.astype(loss_mat.dtype)
-  if loss_agg_mode == "token-mean":
-    return ppo_helpers.masked_mean(loss_mat, loss_mask)
-  elif loss_agg_mode == "seq-mean-token-sum":
-    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
-    return jnp.mean(seq_losses)
-  elif loss_agg_mode == "seq-mean-token-mean":
-    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
-    seq_denoms = jnp.maximum(jnp.sum(loss_mask, axis=-1), 1)
-    return jnp.mean(seq_losses / seq_denoms)
-  elif loss_agg_mode == "seq-mean-token-sum-norm":
-    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
-    return jnp.sum(seq_losses) / loss_mask.shape[-1]
-  else:
-    raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
-
-
-def ppo_policy_loss_fn(
-    model: nnx.Module,
-    train_example: TrainExample,
-    epsilon: float,
-    pad_id: int,
-    eos_id: int,
-):
-  """Computes PPO policy loss with optional entropy regularization."""
-
-  prompt_ids, completion_ids, completion_mask = (
-      train_example.prompt_ids,
-      train_example.completion_ids,
-      train_example.completion_mask,
-  )
-
-  # Compute per-token log-probs via model forward
-  prompt_completion_ids, positions, attn_mask = common.process_ids(
-      prompt_ids, completion_ids, pad_id, eos_id
-  )
-  logits, _ = model(
-      prompt_completion_ids,
-      positions=positions,
-      attention_mask=attn_mask,
-      cache=None,
-  )
-
-  logits_to_keep = completion_ids.shape[1]
-  logits_slice = logits[:, -logits_to_keep - 1 : -1, :]
-  per_token_logps = common.selective_log_softmax(logits_slice, completion_ids)
-  per_token_logps = jnp.where(
-      completion_mask,
-      per_token_logps,
-      jnp.array(0).astype(per_token_logps.dtype),
-  )
-
-  advantages = train_example.advantages
-  old_per_token_logps = train_example.old_per_token_logps
-  ratio = jnp.exp(per_token_logps - old_per_token_logps)
-  # Asymmetric clipping (VERL-style)
-  low = 1.0 - float(getattr(train_example, "clip_ratio_low", epsilon))
-  high = 1.0 + float(getattr(train_example, "clip_ratio_high", epsilon))
-  ratio_clipped = jnp.clip(ratio, low, high)
-  # Vanilla clipped loss per token
-  pg_tok = -jnp.minimum(ratio * advantages, ratio_clipped * advantages)
-
-  aux = {}
-  # Optional dual-clip
-  clip_c = getattr(train_example, "clip_ratio_c", None)
-  if clip_c is not None:
-    try:
-      c = float(clip_c)
-      if c > 1.0:
-        pg_tok = jnp.where(
-            (advantages < 0) & (ratio > c), -c * advantages, pg_tok
-        )
-        dual_mask = (advantages < 0) & (ratio > c)
-        aux["policy/dualclip_frac"] = ppo_helpers.masked_mean(
-            dual_mask.astype(ratio.dtype), completion_mask
-        )
-    except Exception:
-      pass
-  policy_loss = ppo_helpers.masked_mean(pg_tok, completion_mask)
-  # Optional: policy clip fraction diagnostic
-  pg_clipfrac = ppo_helpers.masked_mean(
-      ((ratio < low) | (ratio > high)).astype(ratio.dtype), completion_mask
-  )
-  aux["policy/clipfrac"] = pg_clipfrac
-  entropy_coeff = (
-      float(train_example.entropy_coeff)
-      if train_example.entropy_coeff is not None
-      else 0.0
-  )
-  if entropy_coeff > 0.0:
-    # Per request: always use token-mean aggregation for entropy
-    token_entropy = entropy_from_logits(logits_slice)
-    entropy_loss = agg_loss(
-        token_entropy, completion_mask, loss_agg_mode="token-mean"
-    )
-    policy_loss = policy_loss - (entropy_coeff * entropy_loss)
-    aux["entropy/loss_mean"] = entropy_loss
-    aux["entropy/coeff"] = entropy_coeff
-
-  return policy_loss, aux
-
-
-def ppo_value_loss_fn(
-    model: nnx.Module,
-    train_example: TrainExample,
-    vf_coef: float,
-    clip_range_value: float | None,
-    pad_id: int,
-    eos_id: int,
-):
-  """Computes the value loss for PPO aligned to response tokens (no extra +1)."""
-
-  prompt_ids = train_example.prompt_ids
-  completion_ids = train_example.completion_ids
-  completion_mask = train_example.completion_mask
-  logits_to_keep = completion_ids.shape[1]
-
-  # Old baseline values and returns (both [B, T])
-  values = train_example.old_values
-  returns = train_example.returns
-
-  # Recompute new values from model and align to response tokens
-  vpreds = common.compute_score(
-      model,
-      prompt_ids,
-      completion_ids,
-      pad_id,
-      eos_id,
-      stop_gradient=False,
-  )
-  vpreds = vpreds[:, -logits_to_keep:]
-  vpreds = jnp.where(
-      completion_mask,
-      vpreds,
-      jnp.array(0).astype(vpreds.dtype),
-  )
-
-  # Clipped value loss (TRL-style)
-  vpred_clipped = jnp.clip(
-      vpreds, values - clip_range_value, values + clip_range_value
-  )
-  vf_losses1 = jnp.square(vpreds - returns)
-  vf_losses2 = jnp.square(vpred_clipped - returns)
-  clipped_vf_losses = jnp.maximum(vf_losses1, vf_losses2)
-
-  # Aggregate; prefer token-mean by default, allow example-config override
-  loss_agg_mode = getattr(train_example, "aggs_mode", "token-mean")
-  vf_loss_agg = agg_loss(
-      loss_mat=clipped_vf_losses,
-      loss_mask=completion_mask,
-      loss_agg_mode=loss_agg_mode,
-  )
-  vf_loss = 0.5 * vf_loss_agg
-
-  # Clip fraction for diagnostics
-  vf_clipfrac = ppo_helpers.masked_mean(
-      (vf_losses2 > vf_losses1).astype(vpreds.dtype), completion_mask
-  )
-
-  aux = {"vf_loss": vf_loss, "vf_clipfrac": vf_clipfrac}
-  return vf_coef * vf_loss, aux
-
-
-class MultiTurnPpoLearner(PpoLearner):
-  """Wrapper subclass of Tunix PPO PpoLearner.
-
-  Override lifecycle hooks or training logic here progressively.
-  """
+class PpoLearnerExp(PpoLearner):
+  """Subclass of `PpoLearner` for experimental overrides."""
 
   def __init__(
       self,
-      rl_cluster: rl_cluster_lib.RLCluster,
-      ppo_config: PpoConfig,
-      reward_fns: RewardFn | List[RewardFn] | None = None,
-      data_shuffle_seed: int | None = None,
+      rl_cluster,
+      ppo_config,
+      reward_fns=None,
+      data_shuffle_seed=None,
       *,
       multi_turn_cfg=None,
       multi_turn_processor=None,
@@ -342,10 +98,52 @@ class MultiTurnPpoLearner(PpoLearner):
         reward_fns=reward_fns,
         data_shuffle_seed=data_shuffle_seed,
     )
-    # Override actor & critic losses with custom implementations
-    self.rl_cluster.actor_trainer.with_loss_fn(ppo_policy_loss_fn, has_aux=True)
-    self.rl_cluster.critic_trainer.with_loss_fn(ppo_value_loss_fn, has_aux=True)
 
+    # ===================== MODIFICATION: force-disable reward model usage =====================
+    try:
+      self._use_reward_model = False
+    except Exception:
+      pass
+    # ==========================================================================================
+
+    # ─────────────────── MODIFICATION: attach custom loss fns to trainers ───────────────────
+    # Ensure actor uses experimental policy loss that returns entropy aux metrics
+    try:
+      self.rl_cluster.actor_trainer.with_loss_fn(
+          ppo_policy_loss_fn, has_aux=True
+      )
+    except Exception:
+      pass
+    # Log actor metrics from aux
+    try:
+      self.rl_cluster.actor_trainer.with_rl_metrics_to_log({
+          "actor/pg_loss": "pg_loss",
+          "actor/pg_clipfrac": "pg_clipfrac",
+          "actor/entropy": "entropy",
+          "actor/loss/entropy": "loss/entropy",
+          "actor/loss/total": "loss/total",
+      })
+    except Exception:
+      pass
+    # Ensure critic uses local value loss
+    try:
+      self.rl_cluster.critic_trainer.with_loss_fn(
+          ppo_value_loss_fn, has_aux=True
+      )
+    except Exception:
+      pass
+    # Log critic metrics from aux
+    try:
+      self.rl_cluster.critic_trainer.with_rl_metrics_to_log({
+          "critic/vf_loss": "vf_loss",
+          "critic/vf_clipfrac": "vf_clipfrac",
+          "critic/vpred_mean": "vpred_mean",
+      })
+    except Exception:
+      pass
+    # ─────────────────── END MODIFICATION ───────────────────
+
+    # -======== Modiifcation: add multi-turn rollout initialization =====
     # ─────────────────── Multi-turn rollout manager ───────────────────
     # Initialize when config is provided; otherwise remain None (fallback to single-turn)
     self.multi_turn_rollout = None
@@ -372,6 +170,54 @@ class MultiTurnPpoLearner(PpoLearner):
       )
     # Storage for last built rollout batch to aid later conversion to TrainExample
     self._last_rollout_batch = None
+    # ======= End Modificafiont ====
+
+  def convert_multi_rollout_batch(
+      self,
+      batch,
+      *,
+      pad_value: int,
+      max_prompt_length: int,
+  ):
+    """Convert a multi-turn rollout batch to JAX tensors for PPO.
+
+    Splitting rule:
+    - Fixed prompt length Pmax=1: prompt is the first token only
+    - completion_ids are all tokens after the first token
+    - completion_mask is the provided loss_mask
+    - eos_idx is derived from completion_mask
+    """
+    inp = np.array(batch.input_ids)  # [B, L]
+    loss_m = np.array(batch.loss_mask)  # [B, L-1], values in {0,1}
+    B, L = inp.shape
+
+    # Fixed Pmax = 1
+    prompt_ids = jnp.array(inp[:, :1])  # [B, 1]
+    prompt_mask = (prompt_ids != pad_value).astype("int32")
+
+    # Completion is tokens after the first token; ensure at least width 1
+    if L - 1 <= 0:
+      completion_ids_arr = np.full((B, 1), pad_value, dtype=inp.dtype)
+      completion_mask_arr = np.zeros((B, 1), dtype=np.int32)
+    else:
+      completion_ids_arr = inp[:, 1:]
+      completion_mask_arr = loss_m.astype(np.int32)
+    completion_ids = jnp.array(completion_ids_arr)
+    completion_mask = jnp.array(completion_mask_arr).astype("int32")
+    # Derive eos_idx from completion_mask for robustness
+    eos_idx = jnp.max(
+        common.build_positions_from_mask(completion_mask),
+        axis=-1,
+    ).astype(jnp.int32)
+
+    return prompt_ids, completion_ids, prompt_mask, completion_mask, eos_idx
+
+  def _get_metric_logging_steps(self, mode: metrics_logger.Mode) -> int:
+    return (
+        self._train_steps
+        if mode == metrics_logger.Mode.TRAIN
+        else self._eval_steps
+    )
 
   def _generate_and_compute_advantage(
       self,
@@ -391,6 +237,12 @@ class MultiTurnPpoLearner(PpoLearner):
     pad_value = self.rl_cluster.rollout.pad_id()
     eos_value = self.rl_cluster.rollout.eos_id()
 
+    # TODO(abheesht): verl allows specifying different micro batch sizes for
+    # computing log probs, values, rewards, etc. We can do that here.
+
+    # -======== Modiifcation: Multi-turn rollout splitting (prompt/completion) =====
+    # ===== Generation / Multi-turn conversion ======
+    # Prefer multi-turn rollout if available; otherwise fallback to single-turn generation.
     def _get_rollout_config_for_mode(_mode: metrics_logger.Mode):
       rc = self.rl_cluster.cluster_config.rollout_config
       if isinstance(rc, dict):
@@ -402,11 +254,14 @@ class MultiTurnPpoLearner(PpoLearner):
         return rc[key]
       return rc
 
-    max_prompt_length = _get_rollout_config_for_mode(mode).max_prompt_length
+    rollout_cfg = _get_rollout_config_for_mode(mode)
+    Pmax = int(getattr(rollout_cfg, "max_prompt_length", 0) or 0)
 
-    # ─────────────────── MODIFICATION: Multi-turn rollout with deferred metrics logging ───────────────────
-    # Multi-turn rollout (side-by-side). We defer logging of rollout metrics to the unified
-    # metric logging section below to match PPO learner logging semantics.
+    prompt_ids = None
+    completion_ids = None
+    completion_mask = None
+    eos_idx = None
+
     mt_metrics_dict = None
     meta_metrics_dict = None
     if self.multi_turn_rollout is not None:
@@ -419,58 +274,18 @@ class MultiTurnPpoLearner(PpoLearner):
         self._last_rollout_batch = mt_batch_filtered
         # Defer logging of multi-turn metrics to the unified metric logging section
         mt_metrics_dict = dict(mt_metrics)
-        meta_metrics_dict = dict(mt_batch_filtered.meta_info.get("metrics", {}))
+        try:
+          meta_metrics_dict = dict(
+              mt_batch_filtered.meta_info.get("metrics", {})
+          )
+        except Exception:
+          meta_metrics_dict = None
       finally:
-        # Always reset to release memory between iterations, even if downstream steps fail
         self.multi_turn_rollout.reset()
-    # ─────────────────── END MODIFICATION ───────────────────
 
-    # ─────────────────── MODIFICATION: Full-conversation conversion (replace single-turn rl_cluster.generate) ───────────────────
-    # Convert the filtered multi-turn RolloutBatch into Tunix PPO tensors using full-conversation framing:
-    #   prompt_ids = input_ids[:, :-1] (left-padded to max_prompt_length)
-    #   completion_ids = input_ids[:, 1:]
-    #   completion_mask = loss_mask (already aligned to completion_ids)
-    #   completion_plus_one_mask constructed like Tunix for value alignment
-    def _convert_rollout_batch_to_tunix_format(batch, Pmax: int):
-      inp = np.array(batch.input_ids)
-      loss_m = np.array(batch.loss_mask).astype(bool)  # [B, L-1]
-      B, L = inp.shape
-
-      # Full-conversation framing
-      # - prompt_ids: the original input_ids (full length L)
-      # - completion_ids: future tokens input_ids[:, 1:] (length L-1)
-      prompt_ids_local = jnp.array(inp)
-      completion_ids_local = jnp.array(inp[:, 1:])
-      completion_mask_local = jnp.array(loss_m)
-      prompt_mask_local = (prompt_ids_local != pad_value).astype("int32")
-
-      # EOS index (for terminal reward placement)
-      eos_idx_local = jnp.max(
-          common.build_positions_from_mask(completion_mask_local), axis=-1
-      )
-
-      # ---- build completion_plus_one_mask (t+1 validity) ----
-      T = completion_mask_local.shape[1]
-      # shift mask by one to the right (tokens that have a valid next state)
-      cpm1 = jnp.pad(
-          completion_mask_local[:, 1:], ((0, 0), (0, 1)), constant_values=False
-      )
-      # also mark the position right after EOS as valid (cap at T-1)
-      idx_p1 = jnp.minimum(eos_idx_local + 1, T - 1)
-      cpm1 = cpm1.at[jnp.arange(B), idx_p1].set(True)
-
-      return (
-          prompt_ids_local,
-          completion_ids_local,
-          prompt_mask_local,
-          completion_mask_local,
-          eos_idx_local,
-          cpm1,
-      )
-
-    if self.multi_turn_rollout is None or self._last_rollout_batch is None:
+    if getattr(self, "_last_rollout_batch", None) is None:
       raise RuntimeError(
-          "Multi-turn rollout is not initialized or has no batch; cannot perform full-conversation PPO."
+          "Multi-turn rollout is required but missing _last_rollout_batch."
       )
 
     (
@@ -479,17 +294,19 @@ class MultiTurnPpoLearner(PpoLearner):
         prompt_mask,
         completion_mask,
         eos_idx,
-        completion_plus_one_mask,
-    ) = _convert_rollout_batch_to_tunix_format(
+    ) = self.convert_multi_rollout_batch(
         self._last_rollout_batch,
-        int(max_prompt_length),
+        pad_value=pad_value,
+        max_prompt_length=Pmax,
     )
+    # Ensure float32 mask for stable arithmetic and reductions
+    completion_mask = completion_mask.astype(jnp.float32)
+    # ======= End Modificafiont ====
 
     batch_size = completion_ids.shape[0]
-    # ─────────────────── END MODIFICATION ───────────────────
+    logits_to_keep = completion_ids.shape[1]
 
     # ===== Compute log probs ======
-    logits_to_keep = completion_ids.shape[1]
     # Compute log probs from the reference model. Shape = `[B, T]`.
     if self.ppo_config.beta != 0.0:
       ref_per_token_logps = self.rl_cluster.get_ref_per_token_logps(
@@ -497,13 +314,11 @@ class MultiTurnPpoLearner(PpoLearner):
           completion_tokens=completion_ids,
           pad_id=pad_value,
           eos_id=eos_value,
+          completion_mask=completion_mask.astype(jnp.int32),
       )
-      # Zero-out log probs for padding tokens.
-      ref_per_token_logps = jnp.where(
-          completion_mask,
-          ref_per_token_logps,
-          jnp.array(0).astype(ref_per_token_logps.dtype),
-      )
+      # dtype safety
+
+      _assert_float32(ref_per_token_logps, "ref_per_token_logps")
     else:
       ref_per_token_logps = None
 
@@ -515,41 +330,23 @@ class MultiTurnPpoLearner(PpoLearner):
     old_per_token_logps = self.rl_cluster.get_old_per_token_logps(
         prompt_tokens=prompt_ids,
         completion_tokens=completion_ids,
+        completion_mask=completion_mask.astype(jnp.int32),
     )
-    # Zero-out log probs for padding tokens.
-    old_per_token_logps = jnp.where(
-        completion_mask,
-        old_per_token_logps,
-        jnp.array(0).astype(old_per_token_logps.dtype),
-    )
-
-    # (Entropy loss computation removed)
+    _assert_float32(old_per_token_logps, "old_per_token_logps")
 
     # ===== Value computation ======
     # Get values from the value model before model weights are updated.
-    # Align directly to response tokens; completion_ids already equals input_ids[:, 1:].
     values = self.rl_cluster.get_values(
         prompt_tokens=prompt_ids,
         completion_tokens=completion_ids,
         pad_id=pad_value,
         eos_id=eos_value,
+        completion_mask=completion_mask.astype(jnp.int32),
     )
-
-    # Slice last T and mask with completion_mask
-    values = values[:, -logits_to_keep:]
-    values = jnp.where(
-        completion_mask,
-        values,
-        jnp.array(0).astype(values.dtype),
-    )
-    # Lightweight consistency check (no crash): ensure value targets align with completion length
-    try:
-      if int(values.shape[1]) != int(logits_to_keep):
-        print(
-            f"[warn] values length ({int(values.shape[1])}) != completion length ({int(logits_to_keep)})"
-        )
-    except Exception:
-      pass
+    _assert_float32(values, "values")
+    # `values` start from the last *prompt* token. Shape: `[B, T]`.
+    values = values[:, -logits_to_keep - 1 : -1]
+    values = (values * completion_mask).astype(jnp.float32)
 
     # ===== Reward computation ======
     # Get rewards from the reward model. Eventual shape: `[B, T]`.
@@ -559,188 +356,236 @@ class MultiTurnPpoLearner(PpoLearner):
           completion_tokens=completion_ids,
           pad_id=pad_value,
           eos_id=eos_value,
-      )
+      )[:, -logits_to_keep:]
       # We use the score corresponding to the last non-padding token.
-      # Remember, completion is padded on the right, and the prompt is padded on
-      # the left.
-      last_token_scores = scores[
-          jnp.arange(batch_size),
-          eos_idx + prompt_ids.shape[1],
-      ]
+      last_token_scores = scores[jnp.arange(batch_size), eos_idx]
     else:
-      # ─────────────────── MODIFICATION: Use rollout batch rewards (final column) instead of text-based reward_fns ───────────────────
-      # Convert to JAX array and place on the same sharding as model inputs for correct device allocation.
-      reward_scores_jax = jnp.asarray(self._last_rollout_batch.reward_scores)
-      try:
-        # Match sharding with completion_ids when available (pjit/named sharding setups)
-        if (
-            hasattr(completion_ids, "sharding")
-            and completion_ids.sharding is not None
-        ):
-          reward_scores_jax = jax.device_put(
-              reward_scores_jax, completion_ids.sharding
-          )
-      except Exception:
-        # Best-effort; fallback keeps it as a regular JAX array on default device
-        pass
-      # Align with full-conversation rollout: reward_scores is [B, L-1], take the last column per sample.
-      last_token_scores = reward_scores_jax[:, -1]
-      # ─────────────────── END MODIFICATION ───────────────────
+      # ======== Modiifcation: use rollout reward_scores (last column) as terminal reward =====
+      reward_scores = jnp.asarray(self._last_rollout_batch.reward_scores)
+      last_token_scores = reward_scores[:, -1]
+      # ======= End Modificafiont ====
 
-    # This is how rewards are computed. This is in accordance with TRL and
-    # with verl's `NaiveRewardManager`. This is a different from GRPO, where
-    # we don't consider rewards at the token level.
+    # Reward computation is in accordance with TRL and verl's
+    # `BatchRewardManager` (token-level rewards).
     # 1. Set all rewards (i.e., for every token) to 0s.
-    # 2. Subtract KL divergence from the reward tensor of all 0s.
-    # 3. A positive reward is given only at the final timestep, so we add that
-    # to the reward tensor from (2).
-    # ─────────────────── MODIFICATION: Ensure rewards are float and match sharding ───────────────────
-    rewards = jnp.zeros(completion_ids.shape, dtype=values.dtype)
-    try:
-      if hasattr(values, "sharding") and values.sharding is not None:
-        rewards = jax.device_put(rewards, values.sharding)
-    except Exception:
-      pass
-    # ─────────────────── END MODIFICATION ───────────────────
+    # 2. A positive reward is given only at the final timestep, so we add that
+    # to the tensor of zeros.
+    # 3. Subtract KL divergence from the reward tensor.
+    # Build float rewards tensor to avoid unintended integer quantization
+    rewards = jnp.zeros(completion_ids.shape, dtype=jnp.float32)
+    last_token_scores = jnp.asarray(last_token_scores, dtype=jnp.float32)
+    _assert_float32(last_token_scores, "last_token_scores")
+    rewards = rewards.at[jnp.arange(batch_size), eos_idx].set(last_token_scores)
+    _assert_float32(rewards, "rewards")
     if self.ppo_config.beta != 0.0:
-      # ─────────────────── MODIFICATION: Use direct subtraction of log probs instead of KL divergence ───────────────────
-      # kl = common.compute_kl_divergence(
-      #     old_per_token_logps, ref_per_token_logps
-      # )
-      # ─────────────────── END MODIFICATION ───────────────────
-      kl = old_per_token_logps - ref_per_token_logps
-      rewards = rewards - self.ppo_config.beta * kl
-
-    # Ensure indices and updates are placed on the same sharding as `rewards` for scatter-add
-    batch_indices = jnp.arange(batch_size, dtype=jnp.int32)
-    if hasattr(rewards, "sharding") and rewards.sharding is not None:
-      try:
-        batch_indices = jax.device_put(batch_indices, rewards.sharding)
-        eos_idx = jax.device_put(eos_idx, rewards.sharding)
-        # ─────────────────── MODIFICATION: Cast rewards update to match dtype/sharding ───────────────────
-        last_token_scores = jax.device_put(
-            last_token_scores.astype(rewards.dtype), rewards.sharding
-        )
-        # ─────────────────── END MODIFICATION ───────────────────
-      except Exception:
-        pass
-    rewards = rewards.at[batch_indices, eos_idx].add(
-        last_token_scores.astype(rewards.dtype)
-    )
-
-    # ===== Metric logging ======
-    # TODO(abheesht): Verify metric logging. We should move these to losses,
-    # because the rollout batch can be split into mini-batches.
-    step = self._get_metric_logging_steps(mode)
-
-    # Log raw scores from the reward model/fn
-    self._actor_metrics_logger.log(
-        "score/mean", last_token_scores.mean(), mode, step
-    )
-    self._actor_metrics_logger.log(
-        "score/max", last_token_scores.max(), mode, step
-    )
-    self._actor_metrics_logger.log(
-        "score/min", last_token_scores.min(), mode, step
-    )
-
-    # Log final rewards (scores + KL penalty)
-    sequence_rewards = rewards.sum(-1)
-    self._actor_metrics_logger.log(
-        "reward/mean", sequence_rewards.mean(), mode, step
-    )
-    self._actor_metrics_logger.log(
-        "reward/max", sequence_rewards.max(), mode, step
-    )
-    self._actor_metrics_logger.log(
-        "reward/min", sequence_rewards.min(), mode, step
-    )
-    if self.ppo_config.beta != 0.0:
-      # VERL: per-token mean over sequence, then mean over batch (unscaled)
-      per_sequence_mean_kl = ppo_helpers.masked_mean(  # [B]
-          kl, completion_mask, axis=-1  # pylint: disable=undefined-variable
+      # ================= MODIFICATION: Configurable KL penalty method aligned with TRL =================
+      # Configurable KL penalty method aligned with TRL
+      _kl_method = getattr(self.ppo_config, "kl_penalty_method", "k1")
+      kl = common.compute_kl_divergence(
+          per_token_logps=old_per_token_logps,
+          ref_per_token_logps=ref_per_token_logps,
+          method=_kl_method,
       )
-      current_kl = per_sequence_mean_kl.mean()
-      self._actor_metrics_logger.log(
-          "actor/reward_kl_penalty", float(current_kl), mode, step
+      _assert_float32(kl, "kl_divergence")
+      rewards = rewards - self.ppo_config.beta * (
+          kl * completion_mask.astype(jnp.float32)
       )
-      self._actor_metrics_logger.log(
-          "actor/reward_kl_penalty_coeff",
-          float(self.ppo_config.beta),
-          mode,
-          step,
-      )
-
-    # (Entropy metrics removed)
-
-    # ─────────────────── MODIFICATION: Log multi-turn metrics in unified logging block ───────────────────
-    # Log multi-turn rollout metrics (from filter/meta) in the same block
-    if mt_metrics_dict is not None:
-      for name, value in mt_metrics_dict.items():
-        self._actor_metrics_logger.log(name, float(value), mode, step)
-    if meta_metrics_dict is not None:
-      for name, value in meta_metrics_dict.items():
-        self._actor_metrics_logger.log(name, float(value), mode, step)
-    if self.ppo_config.entropy_coeff > 0.0:
-      self._actor_metrics_logger.log(
-          "entropy/coeff", float(self.ppo_config.entropy_coeff), mode, step
-      )
-    # ─────────────────── END MODIFICATION ───────────────────
-
-    # Log completion lengths.
-    agg_completion_mask = completion_mask.sum(axis=-1)
-    self._actor_metrics_logger.log(
-        "completions/mean_length",
-        agg_completion_mask.mean(),
-        mode,
-        step,
-    )
-    self._actor_metrics_logger.log(
-        "completions/max_length",
-        agg_completion_mask.max(),
-        mode,
-        step,
-    )
-    self._actor_metrics_logger.log(
-        "completions/min_length",
-        agg_completion_mask.min(),
-        mode,
-        step,
-    )
+      _assert_float32(rewards, "rewards_after_kl")
+      # ================= END MODIFICATION =================
 
     # ===== Compute advantages using Generalised Advantage Estimation ======
-    # advantages, returns = ppo_helpers.compute_gae_advantages(
-    #     rewards=rewards,
-    #     values=values,
-    #     gamma=self.ppo_config.gamma,
-    #     gae_lambda=self.ppo_config.gae_lambda,
-    # )
-    advantages, returns = compute_gae_advantages(
+    advantages, returns = ppo_helpers.compute_gae_advantages(
         rewards=rewards,
         values=values,
         completion_mask=completion_mask,
         gamma=self.ppo_config.gamma,
         gae_lambda=self.ppo_config.gae_lambda,
     )
-    # Normalize advantages.
-    advantages = ppo_helpers.normalize_advantages(advantages, completion_mask)
+    _assert_float32(advantages, "advantages")
+    _assert_float32(returns, "returns")
 
-    return TrainExample(
+    # ===== Metric logging ======
+    step = self._get_metric_logging_steps(mode)
+
+    # ================= MODIFICATION: Log multi-turn rollout metrics (from filter/meta) in the same block =================
+    # Log multi-turn rollout metrics (from filter/meta) in the same block
+    if mt_metrics_dict is not None:
+      try:
+        for name, value in mt_metrics_dict.items():
+          self._actor_metrics_logger.log(name, float(value), mode, step)
+      except Exception:
+        pass
+    if meta_metrics_dict is not None:
+      try:
+        for name, value in meta_metrics_dict.items():
+          self._actor_metrics_logger.log(name, float(value), mode, step)
+      except Exception:
+        pass
+
+    # =============== END MODIFICATION ====================
+
+    # Log raw scores from the reward model fn
+    self._actor_metrics_logger.log(
+        "raw_reward/mean", np.mean(last_token_scores), mode, step
+    )
+    self._actor_metrics_logger.log(
+        "raw_reward/max", np.max(last_token_scores), mode, step
+    )
+    self._actor_metrics_logger.log(
+        "raw_reward/min", np.min(last_token_scores), mode, step
+    )
+
+    # Log final rewards (scores + KL penalty)
+    sequence_rewards = rewards.sum(-1)
+    self._actor_metrics_logger.log(
+        "final_reward/mean", np.mean(sequence_rewards), mode, step
+    )
+    self._actor_metrics_logger.log(
+        "final_reward/max", np.max(sequence_rewards), mode, step
+    )
+    self._actor_metrics_logger.log(
+        "final_reward/min", np.min(sequence_rewards), mode, step
+    )
+    if self.ppo_config.beta != 0.0:
+      # Average of the per-sequence mean KL
+      per_sequence_mean_kl = ppo_helpers.masked_mean(
+          kl, completion_mask, axis=-1  # pylint: disable=undefined-variable
+      )
+      self._actor_metrics_logger.log(
+          "actor/reward_kl_penalty", per_sequence_mean_kl.mean(), mode, step
+      )
+      # Also log KL penalty coefficient (beta)
+      try:
+        self._actor_metrics_logger.log(
+            "actor/reward_kl_penalty_coeff",
+            float(self.ppo_config.beta),
+            mode,
+            step,
+        )
+      except Exception:
+        pass
+    # ======== Modification: Log old values (pre-update critic values) statistics with masking ========
+    # Log old values (pre-update critic values) statistics with masking
+    try:
+      _min_vals = jnp.min(
+          jnp.where(
+              completion_mask.astype(bool),
+              values,
+              jnp.finfo(values.dtype).max,
+          ),
+          axis=-1,
+      ).mean()
+      _max_vals = jnp.max(
+          jnp.where(
+              completion_mask.astype(bool),
+              values,
+              -jnp.finfo(values.dtype).max,
+          ),
+          axis=-1,
+      ).mean()
+      _mean_vals = ppo_helpers.masked_mean(values, completion_mask)
+      self._actor_metrics_logger.log(
+          "old_values/mean", float(_mean_vals), mode, step
+      )
+      self._actor_metrics_logger.log(
+          "old_values/min", float(_min_vals), mode, step
+      )
+      self._actor_metrics_logger.log(
+          "old_values/max", float(_max_vals), mode, step
+      )
+    except Exception:
+      pass
+
+    # Log advantages and returns (masked)
+    try:
+      _adv_mean = ppo_helpers.masked_mean(advantages, completion_mask)
+      _ret_mean = ppo_helpers.masked_mean(returns, completion_mask)
+      _adv_min = jnp.min(
+          jnp.where(
+              completion_mask.astype(bool),
+              advantages,
+              jnp.finfo(advantages.dtype).max,
+          ),
+          axis=-1,
+      ).mean()
+      _adv_max = jnp.max(
+          jnp.where(
+              completion_mask.astype(bool),
+              advantages,
+              -jnp.finfo(advantages.dtype).max,
+          ),
+          axis=-1,
+      ).mean()
+      _ret_min = jnp.min(
+          jnp.where(
+              completion_mask.astype(bool),
+              returns,
+              jnp.finfo(returns.dtype).max,
+          ),
+          axis=-1,
+      ).mean()
+      _ret_max = jnp.max(
+          jnp.where(
+              completion_mask.astype(bool),
+              returns,
+              -jnp.finfo(returns.dtype).max,
+          ),
+          axis=-1,
+      ).mean()
+      self._actor_metrics_logger.log(
+          "advantages/mean", float(_adv_mean), mode, step
+      )
+      self._actor_metrics_logger.log(
+          "advantages/min", float(_adv_min), mode, step
+      )
+      self._actor_metrics_logger.log(
+          "advantages/max", float(_adv_max), mode, step
+      )
+      self._actor_metrics_logger.log(
+          "returns/mean", float(_ret_mean), mode, step
+      )
+      self._actor_metrics_logger.log("returns/min", float(_ret_min), mode, step)
+      self._actor_metrics_logger.log("returns/max", float(_ret_max), mode, step)
+    except Exception:
+      pass
+    # ======== END MODIFICATION =================
+
+    # Log completion lengths.
+    agg_completion_mask = completion_mask.sum(axis=-1)
+    self._actor_metrics_logger.log(
+        "completions/mean_length",
+        np.mean(agg_completion_mask),
+        mode,
+        self._get_metric_logging_steps(mode),
+    )
+    self._actor_metrics_logger.log(
+        "completions/max_length",
+        np.max(agg_completion_mask),
+        mode,
+        self._get_metric_logging_steps(mode),
+    )
+    self._actor_metrics_logger.log(
+        "completions/min_length",
+        np.min(agg_completion_mask),
+        mode,
+        self._get_metric_logging_steps(mode),
+    )
+
+    return TrainExampleExp(
         prompt_ids=prompt_ids,
         prompt_mask=prompt_mask,
         completion_ids=completion_ids,
         completion_mask=completion_mask,
-        completion_plus_one_mask=completion_mask,
         ref_per_token_logps=ref_per_token_logps,
         advantages=advantages,
         returns=returns,
         old_per_token_logps=old_per_token_logps,
         old_values=values,
-        entropy_coeff=float(self.ppo_config.entropy_coeff),
-        aggs_mode=str(self.ppo_config.aggs_mode),
-        clip_ratio_low=float(self.ppo_config.clip_ratio_low),
-        clip_ratio_high=float(self.ppo_config.clip_ratio_high),
-        clip_ratio_c=self.ppo_config.clip_ratio_c,
+        entropy_coeff=float(getattr(self.ppo_config, "entropy_coeff", 0.0)),
+        aggs_mode=str(getattr(self.ppo_config, "aggs_mode", "token-mean")),
+        clip_ratio_low=float(getattr(self.ppo_config, "clip_ratio_low", 0.2)),
+        clip_ratio_high=float(getattr(self.ppo_config, "clip_ratio_high", 0.2)),
+        clip_ratio_c=float(getattr(self.ppo_config, "clip_ratio_c", 1.0)),
     )
 
   def _compute_rewards(
@@ -806,11 +651,6 @@ class MultiTurnPpoLearner(PpoLearner):
     Returns:
       None. Examples are put into the data queue.
     """
-    # ─────────────────── MODIFICATION: Rollout-generated batches (no dataloaders) ───────────────────
-    # Future change: instead of advancing an input iterator, call
-    # self.multi_turn_rollout.rollout(), then convert outputs to TrainExample
-    # and queue them directly.
-    # ─────────────────── END MODIFICATION ───────────────────
     example_list = []
 
     def _put_list_of_examples_to_data_queue():
@@ -882,8 +722,8 @@ class MultiTurnPpoLearner(PpoLearner):
         raise e
 
   # ─────────────────── MODIFICATION: Simple validation rollout logging (EVAL only) ───────────────────
-  def _validate(self, eval_ds: Iterable[_TrainingInputT]) -> None:
-    """Run a single validation rollout and log ONLY rollout metrics under EVAL.
+  def _validate(self, eval_ds: Iterable[_TrainingInputT] | None) -> None:
+    """Run one validation rollout and log ONLY rollout metrics under EVAL.
 
     - Ignores `eval_ds`; data comes from the environment.
     - No advantage computation or model updates.
@@ -986,6 +826,7 @@ class MultiTurnPpoLearner(PpoLearner):
       self._validate(None)
       self._initial_eval_done = True
     # ─────────────────── END MODIFICATION ───────────────────
+
     train_iterator = iter(train_ds)
     while True:  # loop over M
       try:
@@ -1015,7 +856,13 @@ class MultiTurnPpoLearner(PpoLearner):
             curr_train_ds = train_data_queue.get(block=True)
             if curr_train_ds is None:
               break
-            if eval_ds and not curr_eval_ds:
+            if (
+                eval_ds
+                and not curr_eval_ds
+                and self.rl_cluster.actor_trainer.train_steps
+                % self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+                == 0
+            ):
               self._prepare_data(
                   iterator=iter(eval_ds),
                   mini_batch_size=None,
@@ -1074,18 +921,211 @@ class MultiTurnPpoLearner(PpoLearner):
           break
       except StopIteration:
         break
-    # Close critic before actor to ensure any final JAX monitoring callbacks
-    # (which may indirectly call wandb.log) occur while the W&B run is active.
-    self.rl_cluster.critic_trainer.close()
     self.rl_cluster.actor_trainer.close()
-    # Ensure rollout managers are closed to release any held resources
-    try:
-      if self.multi_turn_rollout is not None:
-        self.multi_turn_rollout.close()
-    except Exception:
-      pass
-    try:
-      if self.validation_multi_turn_rollout is not None:
-        self.validation_multi_turn_rollout.close()
-    except Exception:
-      pass
+    self.rl_cluster.critic_trainer.close()
+
+def ppo_value_loss_fn(
+    model: nnx.Module,
+    train_example: TrainExample,
+    vf_coef: float,
+    clip_range_value: float | None,
+    pad_id: int,
+    eos_id: int,
+):
+  """Computes the value loss for PPO."""
+
+  prompt_ids, completion_ids, completion_mask = (
+      train_example.prompt_ids,
+      train_example.completion_ids,
+      train_example.completion_mask,
+  )
+  logits_to_keep = completion_ids.shape[1]
+
+  # ====== Loss ======
+  values = train_example.old_values
+  returns = train_example.returns
+  # Get new values.
+  vpreds = common.compute_score(
+      model,
+      prompt_ids,
+      completion_ids,
+      pad_id,
+      eos_id,
+      stop_gradient=False,
+      completion_mask=completion_mask.astype(jnp.int32),
+  )
+  vpreds = vpreds[:, -logits_to_keep - 1 : -1]
+  # Ensure float32 for stable diff and clipping
+  vpreds = vpreds.astype(jnp.float32)
+  values = values.astype(jnp.float32)
+  returns = returns.astype(jnp.float32)
+  _assert_float32(vpreds, "critic/vpreds")
+  _assert_float32(values, "critic/old_values")
+  _assert_float32(returns, "critic/returns")
+  vpred_clipped = jnp.clip(
+      vpreds, values - clip_range_value, values + clip_range_value
+  )
+  vf_losses1 = jnp.square(vpreds - returns)
+  vf_losses2 = jnp.square(vpred_clipped - returns)
+
+  clipped_vf_losses = jnp.maximum(vf_losses1, vf_losses2)
+  # "token mean" style of normalisation.
+  vf_loss = ppo_helpers.masked_mean(clipped_vf_losses, completion_mask)
+  vf_loss = 0.5 * vf_loss
+
+  aux = {
+      "vf_loss": vf_loss,
+      "vpred_mean": ppo_helpers.masked_mean(vpreds, completion_mask),
+      "vf_clipfrac": ppo_helpers.masked_mean(
+          (vf_losses2 > vf_losses1).astype(jnp.float32), completion_mask
+      ),
+  }
+  return vf_coef * vf_loss, aux
+
+
+def entropy_from_logits_jax(logits: jax.Array) -> jax.Array:
+  logps = jax.nn.log_softmax(logits, axis=-1)
+  ps = jnp.exp(logps)
+  return -jnp.sum(ps * logps, axis=-1)
+
+
+def agg_loss_jax(
+    loss_mat: jax.Array, loss_mask: jax.Array, loss_agg_mode: str = "token-mean"
+) -> jax.Array:
+  loss_mask = loss_mask.astype(loss_mat.dtype)
+  if loss_agg_mode == "token-mean":
+    num = jnp.sum(loss_mat * loss_mask)
+    den = jnp.sum(loss_mask) + 1e-8
+    return num / den
+  elif loss_agg_mode == "seq-mean-token-sum":
+    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
+    return jnp.mean(seq_losses)
+  elif loss_agg_mode == "seq-mean-token-mean":
+    token_counts = jnp.sum(loss_mask, axis=-1) + 1e-8
+    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1) / token_counts
+    return jnp.mean(seq_losses)
+  elif loss_agg_mode == "seq-mean-token-sum-norm":
+    seq_losses = jnp.sum(loss_mat * loss_mask, axis=-1)
+    return jnp.sum(seq_losses) / loss_mask.shape[-1]
+  else:
+    raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
+
+
+# =============================================== MODIFICATION ===============================================
+def ppo_policy_loss_fn(
+    model: nnx.Module,
+    train_example: TrainExample,
+    epsilon: float,
+    pad_id: int,
+    eos_id: int,
+):
+  """Computes the policy loss for PPO with asymmetric + dual-clip support.
+
+  ===== MODIFICATION: Broadcasting fix + asymmetric and dual-clip PPO =====
+  - Keep all tokenwise tensors [B, T]; remove expand_dims broadcasting.
+  - Asymmetric clipping via clip_ratio_low/high (fallback to epsilon if missing).
+  - Dual-clip PPO via clip_ratio_c when > 1.0 and advantages < 0.
+  - Masked-mean reduction over completion_mask.
+  - Entropy regularization unchanged.
+  ===== END MODIFICATION =====
+  """
+
+  prompt_ids, completion_ids, completion_mask = (
+      train_example.prompt_ids,
+      train_example.completion_ids,
+      train_example.completion_mask,
+  )
+
+  # Get log probs (tokenwise [B, T]) and logits slice for entropy.
+  per_token_logps, logits_slice = common.compute_per_token_logps_and_logits(
+      model,
+      prompt_tokens=prompt_ids,
+      completion_tokens=completion_ids,
+      pad_id=pad_id,
+      eos_id=eos_id,
+      stop_gradient=False,
+      completion_mask=completion_mask.astype(jnp.int32),
+  )
+  # Ensure float32 for numerical stability
+  _assert_float32(per_token_logps, "per_token_logps")
+  _assert_float32(logits_slice, "logits_slice")
+
+  advantages = train_example.advantages  # [B, T]
+  old_per_token_logps = train_example.old_per_token_logps  # [B, T]
+  # Force/Assert float32
+  _assert_float32(advantages, "advantages")
+  _assert_float32(old_per_token_logps, "old_per_token_logps")
+
+  # ---- NEW: asymmetric clip bounds & dual-clip constant (safe fallbacks)
+  clip_low = float(getattr(train_example, "clip_ratio_low", epsilon))
+  clip_high = float(getattr(train_example, "clip_ratio_high", epsilon))
+  clip_c = float(
+      getattr(train_example, "clip_ratio_c", 0.0)
+  )  # ≤1.0 disables dual-clip
+  use_dual_clip = clip_c > 1.0
+
+  # Ratios and clipped ratios [B, T]
+  ratio = jnp.exp(per_token_logps - old_per_token_logps)  # [B, T]
+  ratio_clipped = jnp.clip(ratio, 1.0 - clip_low, 1.0 + clip_high)  # [B, T]
+
+  # Vanilla PPO per-token losses [B, T]
+  pg_losses1 = -(advantages * ratio)
+  pg_losses2 = -(advantages * ratio_clipped)
+  clip_pg_losses1 = jnp.maximum(pg_losses1, pg_losses2)
+  pg_clipfrac = ppo_helpers.masked_mean(
+      (pg_losses2 > pg_losses1).astype(jnp.float32), completion_mask
+  )
+
+  # Dual-clip when advantages < 0
+  if use_dual_clip:
+    pg_losses3 = -(advantages * clip_c)
+    clip_pg_losses2 = jnp.minimum(pg_losses3, clip_pg_losses1)
+    pg_losses = jnp.where(advantages < 0.0, clip_pg_losses2, clip_pg_losses1)
+    pg_clipfrac_lower = ppo_helpers.masked_mean(
+        ((clip_pg_losses1 > pg_losses3) & (advantages < 0.0)).astype(
+            jnp.float32
+        ),
+        completion_mask,
+    )
+  else:
+    pg_losses = clip_pg_losses1
+    pg_clipfrac_lower = jnp.array(0.0, dtype=per_token_logps.dtype)
+
+  # Reduce to scalar with token-mean normalization
+  policy_loss = ppo_helpers.masked_mean(pg_losses, completion_mask)
+  _assert_float32(policy_loss, "policy_loss")
+
+  aux = {
+      "pg_loss": policy_loss,
+      "pg_clipfrac": pg_clipfrac,
+      "pg_clipfrac_lower": pg_clipfrac_lower,
+  }
+
+  # Optional entropy regularization from logits
+  entropy_coef = float(getattr(train_example, "entropy_coeff", 0.0))
+  entropy_agg = str(getattr(train_example, "aggs_mode", "token-mean"))
+  if entropy_coef != 0.0:
+    token_entropy = entropy_from_logits_jax(logits_slice)  # [B, T]
+    _assert_float32(token_entropy, "token_entropy")
+    entropy_loss = agg_loss_jax(token_entropy, completion_mask, entropy_agg)
+    _assert_float32(entropy_loss, "entropy_loss")
+    total_loss = policy_loss - entropy_coef * entropy_loss
+    _assert_float32(total_loss, "total_loss")
+    aux.update({
+        "entropy": ppo_helpers.masked_mean(token_entropy, completion_mask),
+        "loss/entropy": entropy_loss,
+        "loss/total": total_loss,
+    })
+
+    return total_loss, aux
+
+  aux["loss/total"] = policy_loss
+  # Provide entropy=0 path for consistency when entropy disabled
+  zero = jnp.array(0.0, dtype=policy_loss.dtype)
+  aux["loss/entropy"] = zero
+  aux["entropy"] = zero
+  return policy_loss, aux
+
+
+# =============================================== END MODIFICATION ===============================================
+

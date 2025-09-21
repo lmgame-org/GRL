@@ -22,7 +22,7 @@ import optax
 # RL cluster and PPO trainer wrappers
 from tunix.rl import rl_cluster as rl_cluster_lib
 from tunix.rl.rollout import base_rollout
-from grl.trainer.tunix_agent_trainer_exp import PpoConfigExp, PpoLearnerExp
+from grl.trainer.tunix_agent_trainer import PpoConfigExp, PpoLearnerExp
 from tunix.rl.utils import create_critic_model
 
 # Config and metrics
@@ -356,10 +356,11 @@ def save_intermediate_state(module: nnx.Module, save_dir: str) -> None:
 def build_reference_model_from_ckpt(ckpt_path: str):
   """Restore reference model and return (model, mesh, model_config)."""
   mesh = jax.make_mesh(*MESH)
-  model_config = model.ModelConfig.qwen2_5_0_5_b()
-  abs_qwen2: nnx.Module = nnx.eval_shape(
-      lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
-  )
+  model_config = model.ModelConfig.qwen2_5_0_5b()
+  with mesh:
+    abs_qwen2: nnx.Module = nnx.eval_shape(
+        lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+    )
   abs_state = nnx.state(abs_qwen2)
   abs_state = jax.tree.map(
       lambda a, s: jax.ShapeDtypeStruct(a.shape, jnp.float32, sharding=s),
@@ -380,9 +381,10 @@ def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
   Ensures the returned module is a distinct Python object so optimizer updates on
   the actor do not affect the frozen reference.
   """
-  abs_mod: nnx.Module = nnx.eval_shape(
-      lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
-  )
+  with mesh:
+    abs_mod: nnx.Module = nnx.eval_shape(
+        lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+    )
   gdef, _ = nnx.split(abs_mod)
   src_state = nnx.state(src_module)
   # Best-effort: ensure arrays are placed on the provided mesh sharding
@@ -397,9 +399,12 @@ def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
 
 
 # 1) Download weights and load base model, then save an intermediate state
-model_config = model.ModelConfig.qwen2_5_0_5_b()
+model_config = model.ModelConfig.qwen2_5_0_5b()
 model_dir = download_model_weights(repo_id, MODEL_CP_PATH)
-qwen2 = load_qwen2_from_safetensors(model_dir, model_config)
+# Ensure a JAX mesh context is active before constructing sharded variables
+mesh = jax.make_mesh(*MESH)
+with mesh:
+  qwen2 = load_qwen2_from_safetensors(model_dir, model_config)
 save_intermediate_state(qwen2, INTERMEDIATE_CKPT_DIR)
 del qwen2
 gc.collect()
@@ -591,9 +596,10 @@ def get_critic_model(
     _model_config, _ref_model: nnx.Module, _mesh
 ) -> nnx.Module:
   """Builds a critic from ref backbone and shards it to the provided mesh."""
-  abs_mod: nnx.Module = nnx.eval_shape(
-      lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
-  )
+  with _mesh:
+    abs_mod: nnx.Module = nnx.eval_shape(
+        lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
+    )
   graph_def, _ = nnx.split(abs_mod)
   ref_state = nnx.state(_ref_model)
   backbone = nnx.merge(graph_def, ref_state)
@@ -754,25 +760,25 @@ ppo_config = PpoConfigExp(
     clip_ratio_c=CLIP_RATIO_C,
     kl_penalty_method=kl_penalty_method,
 )
-# RL cluster
-rl_cluster = rl_cluster_lib.RLCluster(
-    actor=policy_qwen2,
-    critic=critic_qwen2,
-    reference=qwen2_ref,
-    tokenizer=qwen_tokenizer,
-    cluster_config=cluster_config,
-)
-# Multi-turn PPO Trainer (experimental)
-ppo_trainer = PpoLearnerExp(
-    rl_cluster=rl_cluster,
-    ppo_config=ppo_config,
-    reward_fns=_dummy_reward_fn,
-    multi_turn_cfg=multi_turn_cfg,
-    multi_turn_processor=None,
-    multi_turn_validation=False,
-)
-
 with mesh:
+  # RL cluster
+  rl_cluster = rl_cluster_lib.RLCluster(
+      actor=policy_qwen2,
+      critic=critic_qwen2,
+      reference=qwen2_ref,
+      tokenizer=qwen_tokenizer,
+      cluster_config=cluster_config,
+  )
+  # Multi-turn PPO Trainer (experimental)
+  ppo_trainer = PpoLearnerExp(
+      rl_cluster=rl_cluster,
+      ppo_config=ppo_config,
+      reward_fns=_dummy_reward_fn,
+      multi_turn_cfg=multi_turn_cfg,
+      multi_turn_processor=None,
+      multi_turn_validation=False,
+  )
+
   ppo_trainer.train(dataset)
 
 

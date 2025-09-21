@@ -101,6 +101,7 @@ dependencies = [
     "jinja2",
     "networkx",
     "setuptools",
+    "jax-smi",
     
     # WEBSHOP & DATASET DEPENDENCIES (included by default)
     "gdown>=4.6.6",
