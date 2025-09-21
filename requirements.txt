@@ -1,6 +1,7 @@
 # =============================================================================
 # CORE DEPENDENCIES - INSTALL ORDER MATTERS
 # =============================================================================
+# Requires Python >=3.12
 # torch must be installed first for flash-attn compilation
 torch==2.7.0
 flash-attn==2.8.0.post2
