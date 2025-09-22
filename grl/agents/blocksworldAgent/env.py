@@ -30,10 +30,14 @@ class BlocksworldEnv(BaseEnv):
     # Define action space: [block_to_move, destination]
     # block_to_move: 1 to num_blocks
     # destination: 0 (table) or 1 to num_blocks (on top of another block)
-    self.ACTION_SPACE = gym.spaces.Tuple([
-        gym.spaces.Discrete(self.num_blocks + 1, start=1),  # 1 to num_blocks
-        gym.spaces.Discrete(self.num_blocks + 1),  # 0 to num_blocks
-    ])
+    self.ACTION_SPACE = gym.spaces.Tuple(
+        [
+            gym.spaces.Discrete(
+                self.num_blocks + 1, start=1
+            ),  # 1 to num_blocks
+            gym.spaces.Discrete(self.num_blocks + 1),  # 0 to num_blocks
+        ]
+    )
 
   def integer_to_action(self, int_action):
     # From an integer returns the encoded format for an action

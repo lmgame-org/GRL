@@ -367,9 +367,9 @@ def reverse_move(room_state, room_structure, box_mapping, last_pull, action):
       ]:
         # Perform pull of the adjacent box
         room_state[player_position[0], player_position[1]] = 3
-        room_state[
-            possible_box_location[0], possible_box_location[1]
-        ] = room_structure[possible_box_location[0], possible_box_location[1]]
+        room_state[possible_box_location[0], possible_box_location[1]] = (
+            room_structure[possible_box_location[0], possible_box_location[1]]
+        )
 
         # Update the box mapping
         for k in box_mapping.keys():

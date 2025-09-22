@@ -371,11 +371,13 @@ class AgentTrainer(RayPPOTrainer):
               rollout_probs_diff_max = torch.max(rollout_probs_diff)
               rollout_probs_diff_mean = torch.mean(rollout_probs_diff)
               rollout_probs_diff_std = torch.std(rollout_probs_diff)
-              metrics.update({
-                  "training/rollout_probs_diff_max": rollout_probs_diff_max.detach().item(),
-                  "training/rollout_probs_diff_mean": rollout_probs_diff_mean.detach().item(),
-                  "training/rollout_probs_diff_std": rollout_probs_diff_std.detach().item(),
-              })
+              metrics.update(
+                  {
+                      "training/rollout_probs_diff_max": rollout_probs_diff_max.detach().item(),
+                      "training/rollout_probs_diff_mean": rollout_probs_diff_mean.detach().item(),
+                      "training/rollout_probs_diff_std": rollout_probs_diff_std.detach().item(),
+                  }
+              )
 
           if self.use_reference_policy:
             # compute reference log_prob
@@ -447,9 +449,9 @@ class AgentTrainer(RayPPOTrainer):
           if self.config.trainer.critic_warmup <= self.global_steps:
             # update actor
             with marked_timer("update_actor", timing_raw, color="red"):
-              batch.meta_info[
-                  "multi_turn"
-              ] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+              batch.meta_info["multi_turn"] = (
+                  self.config.actor_rollout_ref.rollout.multi_turn.enable
+              )
               actor_output = self.actor_rollout_wg.update_actor(batch)
             actor_output_metrics = reduce_metrics(
                 actor_output.meta_info["metrics"]
@@ -500,10 +502,12 @@ class AgentTrainer(RayPPOTrainer):
               self._save_checkpoint()
 
         # training metrics
-        metrics.update({
-            "train/global_step": self.global_steps,
-            "train/epoch": epoch,
-        })
+        metrics.update(
+            {
+                "train/global_step": self.global_steps,
+                "train/epoch": epoch,
+            }
+        )
         # collect metrics
         metrics.update(
             compute_data_metrics(batch=batch, use_critic=self.use_critic)
