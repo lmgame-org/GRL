@@ -32,6 +32,7 @@ from tunix.sft import metrics_logger
 # Hugging Face IO and paths
 from huggingface_hub import snapshot_download
 from etils import epath
+import numpy as np
 from transformers import AutoTokenizer
 
 # Utilities and env
@@ -130,7 +131,7 @@ EVAL_TEMPERATURE = float(tunix_cfg.rollout_runtime.temperature_eval)
 TOP_P = float(tunix_cfg.rollout_runtime.top_p)
 TOP_K = None if tunix_cfg.rollout_runtime.top_k is None else int(tunix_cfg.rollout_runtime.top_k)
 
-# Training loop setup
+  # Training loop setup
 NUM_BATCHES = int(200 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
 # Use YAML value if > 0, else fallback
 _ee = int(tunix_cfg.training.eval_every_n_steps)
@@ -283,12 +284,12 @@ def download_model_weights(repo_id: str, local_dir: str) -> str:
       repo_id=repo_id,
       local_dir=local_dir,
       allow_patterns=[
-        "*.safetensors",
-        "*.json",
-        "tokenizer.*",
-        "*.model",
-        "vocab*",
-        "merges.txt",
+          "*.safetensors",
+          "*.json",
+          "tokenizer.*",
+          "*.model",
+          "vocab*",
+          "merges.txt",
       ],
   )
   print("Files downloaded to:", downloaded)
@@ -313,13 +314,13 @@ def save_intermediate_state(module: nnx.Module, save_dir: str) -> None:
     time.sleep(60)
 
 
-def build_reference_model_from_ckpt(ckpt_path: str):
+def build_reference_model_from_ckpt(ckpt_path: str, mesh):
   """Restore reference model and return (model, mesh, model_config)."""
-  mesh = jax.make_mesh(*MESH)
   model_config = model.ModelConfig.qwen2_5_0_5_b()
-  abs_qwen2: nnx.Module = nnx.eval_shape(
-      lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
-  )
+  with mesh:
+    abs_qwen2: nnx.Module = nnx.eval_shape(
+        lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+    )
   abs_state = nnx.state(abs_qwen2)
   abs_state = jax.tree.map(
       lambda a, s: jax.ShapeDtypeStruct(a.shape, jnp.float32, sharding=s),
@@ -361,8 +362,19 @@ del qwen2
 gc.collect()
 
 # 2) Build reference/policy and critic models
+shape, axes = MESH
+devices = jax.devices("tpu")
+if len(devices) == 0:
+  raise ValueError(
+      "No TPU devices visible. Set JAX to TPU backend and ensure 4 devices."
+  )
+if len(devices) < int(np.prod(shape)):
+  raise ValueError(
+      f"Insufficient TPU devices for mesh {shape}. Required: {int(np.prod(shape))}, found: {len(devices)}."
+  )
+mesh = jax.sharding.Mesh(np.array(devices).reshape(shape), axes)
 qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
-    os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state")
+    os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state"), mesh
 )
 policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
 tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
@@ -522,12 +534,12 @@ class Qwen2CriticTokenClass(nnx.Module):
 
   def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
     _ = self.backbone(
-      input_tokens,
-      positions=positions,
-      cache=cache,
-      attention_mask=attention_mask,
-      output_hidden_states=True,
-      **kwargs,
+        input_tokens,
+        positions=positions,
+        cache=cache,
+        attention_mask=attention_mask,
+        output_hidden_states=True,
+        **kwargs,
     )
     h = nnx.pop(self.backbone, nnx.Intermediate)["all_hidden_states"].value
     if isinstance(h, (list, tuple)):
@@ -632,65 +644,65 @@ if MAX_GRAD_NORM is not None:
 
 # Training config
 cluster_config = rl_cluster_lib.ClusterConfig(
-    role_to_mesh={
-        rl_cluster_lib.Role.ACTOR: mesh,
-        rl_cluster_lib.Role.CRITIC: mesh,
-        rl_cluster_lib.Role.REFERENCE: mesh,
-        rl_cluster_lib.Role.ROLLOUT: mesh,
-    },
-    rollout_engine='vanilla',
-    offload_to_cpu=CPU_OFFLOAD,
-    training_config=rl_cluster_lib.RLTrainingConfig(
-        actor_optimizer=actor_optimizer,
-        critic_optimizer=critic_optimizer,
-        eval_every_n_steps=EVAL_EVERY_N_STEPS,
-        max_steps=MAX_STEPS,
-        gradient_accumulation_steps= GRADIENT_ACCUMULATION_STEPS,
-        # metrics logging
-        metrics_logging_options=metrics_logging_options,
-        # checkpoint saving
-        checkpoint_root_directory=CKPT_DIR,
-        checkpointing_options=checkpointing_options,
+  role_to_mesh={
+    rl_cluster_lib.Role.ACTOR: mesh,
+    rl_cluster_lib.Role.CRITIC: mesh,
+    rl_cluster_lib.Role.REFERENCE: mesh,
+    rl_cluster_lib.Role.ROLLOUT: mesh,
+  },
+  rollout_engine='vanilla',
+  offload_to_cpu=CPU_OFFLOAD,
+  training_config=rl_cluster_lib.RLTrainingConfig(
+    actor_optimizer=actor_optimizer,
+    critic_optimizer=critic_optimizer,
+    eval_every_n_steps=EVAL_EVERY_N_STEPS,
+    max_steps=MAX_STEPS,
+    gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+    # metrics logging
+    metrics_logging_options=metrics_logging_options,
+    # checkpoint saving
+    checkpoint_root_directory=CKPT_DIR,
+    checkpointing_options=checkpointing_options,
+  ),
+  rollout_config={
+    rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
+      max_tokens_to_generate=TOTAL_GENERATION_STEPS,
+      max_prompt_length=MAX_PROMPT_LENGTH,
+      kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
+      temperature=TEMPERATURE,
+      top_p=TOP_P,
+      top_k=TOP_K,
     ),
-    rollout_config={
-        rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
-            max_tokens_to_generate=TOTAL_GENERATION_STEPS,
-            max_prompt_length=MAX_PROMPT_LENGTH,
-            kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            top_k=TOP_K,
-        ),
-        rl_cluster_lib.Mode.EVAL: base_rollout.RolloutConfig(
-            max_tokens_to_generate=TOTAL_GENERATION_STEPS,
-            max_prompt_length=MAX_PROMPT_LENGTH,
-            kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-            temperature=EVAL_TEMPERATURE,
-            top_p=1.0,
-            top_k=None,
-        ),
-    },
+    rl_cluster_lib.Mode.EVAL: base_rollout.RolloutConfig(
+      max_tokens_to_generate=TOTAL_GENERATION_STEPS,
+      max_prompt_length=MAX_PROMPT_LENGTH,
+      kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
+      temperature=EVAL_TEMPERATURE,
+      top_p=1.0,
+      top_k=None,
+    ),
+  },
 )
 
 # todo: add per-mode rollout config for training and evaluation (especially for validation)
 
 ppo_config = PpoConfigExp(
-    num_ppo_epochs=NUM_PPO_EPOCHS,
-    mini_batch_size=MINI_BATCH_SIZE,
-    gamma=GAMMA,
-    gae_lambda=GAE_LAMBDA,
-    beta=BETA,
-    epsilon=EPSILON,
-    vf_coef=VF_COEF,
-    clip_range_value=CLIP_RANGE_VALUE,
-    # Entropy regularization
-    entropy_coeff=ENTROPY_COEFF,
-    aggs_mode=ENTROPY_AGGS_MODE,
-    # ===== MODIFICATION: Asymmetric + dual-clip PPO hyperparameters =====
-    clip_ratio_low=CLIP_RATIO_LOW,
-    clip_ratio_high=CLIP_RATIO_HIGH,
-    clip_ratio_c=CLIP_RATIO_C,
-    kl_penalty_method=kl_penalty_method,
+  num_ppo_epochs=NUM_PPO_EPOCHS,
+  mini_batch_size=MINI_BATCH_SIZE,
+  gamma=GAMMA,
+  gae_lambda=GAE_LAMBDA,
+  beta=BETA,
+  epsilon=EPSILON,
+  vf_coef=VF_COEF,
+  clip_range_value=CLIP_RANGE_VALUE,
+  # Entropy regularization
+  entropy_coeff=ENTROPY_COEFF,
+  aggs_mode=ENTROPY_AGGS_MODE,
+  # ===== MODIFICATION: Asymmetric + dual-clip PPO hyperparameters =====
+  clip_ratio_low=CLIP_RATIO_LOW,
+  clip_ratio_high=CLIP_RATIO_HIGH,
+  clip_ratio_c=CLIP_RATIO_C,
+  kl_penalty_method=kl_penalty_method,
 )
 # RL cluster
 rl_cluster = rl_cluster_lib.RLCluster(
@@ -702,21 +714,21 @@ rl_cluster = rl_cluster_lib.RLCluster(
 )
 # Multi-turn PPO Trainer (experimental)
 ppo_trainer = PpoLearnerExp(
-    rl_cluster=rl_cluster,
-    ppo_config=ppo_config,
-    reward_fns=_dummy_reward_fn,
-    multi_turn_cfg=multi_turn_cfg,
-    multi_turn_processor=None,
-    multi_turn_validation=False,
+  rl_cluster=rl_cluster,
+  ppo_config=ppo_config,
+  reward_fns=_dummy_reward_fn,
+  multi_turn_cfg=multi_turn_cfg,
+  multi_turn_processor=None,
+  multi_turn_validation=False,
 )
 
 with mesh:
-    ppo_trainer.train(dataset)
+  ppo_trainer.train(dataset)
 
 
 try:
-    wandb.finish()
+  wandb.finish()
 except Exception:
-    pass
+  pass
 
 

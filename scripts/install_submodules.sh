@@ -205,6 +205,10 @@ install_tunix() {
 
     print_step "Installing tunix framework..."
 
+    # Ensure JAX TPU backend is available for Tunix
+    print_step "Installing JAX TPU backend (jax[tpu])"
+    pip install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+
     # Remove any previously installed tunix to avoid path shadowing
     pip uninstall -y tunix >/dev/null 2>&1 || true
 
