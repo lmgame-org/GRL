@@ -105,10 +105,35 @@ bash scripts/install_submodules.sh --webshop
 
 
 ### Optional: Install Datasets
-If you want to reproduce paper results and validate BIRD SQL performance or WebShop full dataset performance:
+If you want to reproduce paper results and validate BIRD SQL performance or WebShop full dataset performance, use the dataset loader script:
+
+- Load all supported datasets
 ```bash
-bash scripts/install_dataset.sh --all
+bash scripts/load_dataset.sh --all
 ```
+
+- Load individual datasets
+```bash
+bash scripts/load_dataset.sh --bird
+bash scripts/load_dataset.sh --webshop
+```
+
+- Alternatively, use environment variables
+```bash
+LOAD_BIRD_DATASET=1 bash scripts/load_dataset.sh
+LOAD_WEBSHOP_DATASET=1 bash scripts/load_dataset.sh
+LOAD_ALL_DATASETS=1 bash scripts/load_dataset.sh
+```
+
+- Show help and options
+```bash
+bash scripts/load_dataset.sh --help
+```
+
+Notes:
+- The loader relies on `scripts/load_dataset.py` under the hood.
+- Set `HF_TOKEN` if any dataset requires authenticated downloads (see environment exports above).
+- If no dataset is selected, the script prints usage and exits.
 
 ## Training Examples
 
