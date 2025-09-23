@@ -118,18 +118,6 @@ bash scripts/load_dataset.sh --bird
 bash scripts/load_dataset.sh --webshop
 ```
 
-- Alternatively, use environment variables
-```bash
-LOAD_BIRD_DATASET=1 bash scripts/load_dataset.sh
-LOAD_WEBSHOP_DATASET=1 bash scripts/load_dataset.sh
-LOAD_ALL_DATASETS=1 bash scripts/load_dataset.sh
-```
-
-- Show help and options
-```bash
-bash scripts/load_dataset.sh --help
-```
-
 Notes:
 - The loader relies on `scripts/load_dataset.py` under the hood.
 - Set `HF_TOKEN` if any dataset requires authenticated downloads (see environment exports above).
