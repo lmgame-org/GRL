@@ -7,3 +7,7 @@
 	path = external/webshop-minimal
 	url = https://github.com/ZihanWang314/webshop-minimal.git
 
+[submodule "tunix"]
+	path = tunix
+	url = https://github.com/Yuxuan-Zhang-Dexter/tunix.git
+	branch = tunix_main_09_23_2025
