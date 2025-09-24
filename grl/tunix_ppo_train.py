@@ -46,8 +46,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 def derive_hparams(cfg):
   """Derive scalar hyperparameters and convenience values from config."""
   # Core PPO (trainer.ppo)
-  entropy_coeff = float(cfg.trainer.ppo.entropy_coeff)
-  entropy_aggs_mode = str(cfg.trainer.ppo.aggs_mode)
+  entropy_coef = float(cfg.trainer.ppo.entropy_coef)
 
   # Rollout agent sizing
   filter_ratio = float(cfg.rollout.rollout_filter_ratio)
@@ -64,17 +63,16 @@ def derive_hparams(cfg):
 
   # PPO schedulers
   num_ppo_epochs = int(cfg.trainer.ppo.num_ppo_epochs)
-  mini_batch_size = int(cfg.trainer.ppo.mini_batch_size)
+  # Mini-batch size is part of cluster.training_config in new config
+  mini_batch_size = int(cfg.cluster.training_config.mini_batch_size)
   gamma = float(cfg.trainer.ppo.gamma)
   gae_lambda = float(cfg.trainer.ppo.gae_lambda)
   beta = float(cfg.trainer.ppo.beta)
   epsilon = float(cfg.trainer.ppo.epsilon)
-  vf_coef = float(cfg.trainer.ppo.vf_coef)
   clip_range_value = float(cfg.trainer.ppo.clip_range_value)
   epsilon_low = float(cfg.trainer.ppo.epsilon_low)
   epsilon_high = float(cfg.trainer.ppo.epsilon_high)
   epsilon_c = float(cfg.trainer.ppo.epsilon_c)
-  kl_penalty_method = str(cfg.trainer.ppo.kl_penalty_method)
 
   # Mesh (cluster.mesh)
   try:
@@ -132,8 +130,7 @@ def derive_hparams(cfg):
   max_to_keep = int(cfg.cluster.training_config.checkpoint.max_to_keep)
 
   return {
-      "entropy_coeff": entropy_coeff,
-      "entropy_aggs_mode": entropy_aggs_mode,
+      "entropy_coef": entropy_coef,
       "filter_ratio": filter_ratio,
       "group_nums": group_nums,
       "group_sizes": group_sizes,
@@ -145,12 +142,10 @@ def derive_hparams(cfg):
       "gae_lambda": gae_lambda,
       "beta": beta,
       "epsilon": epsilon,
-      "vf_coef": vf_coef,
       "clip_range_value": clip_range_value,
       "epsilon_low": epsilon_low,
       "epsilon_high": epsilon_high,
       "epsilon_c": epsilon_c,
-      "kl_penalty_method": kl_penalty_method,
       "mesh": mesh,
       "max_prompt_length": max_prompt_length,
       "total_generation_steps": total_generation_steps,
@@ -225,19 +220,15 @@ def _print_config_summary(cfg, derived):
       {
           "trainer.ppo": {
               "num_ppo_epochs": derived["num_ppo_epochs"],
-              "mini_batch_size": derived["mini_batch_size"],
               "gamma": derived["gamma"],
               "gae_lambda": derived["gae_lambda"],
               "beta": derived["beta"],
               "epsilon": derived["epsilon"],
-              "vf_coef": derived["vf_coef"],
               "clip_range_value": derived["clip_range_value"],
-              "entropy_coeff": derived["entropy_coeff"],
-              "aggs_mode": derived["entropy_aggs_mode"],
+              "entropy_coef": derived["entropy_coef"],
               "epsilon_low": derived["epsilon_low"],
               "epsilon_high": derived["epsilon_high"],
               "epsilon_c": derived["epsilon_c"],
-              "kl_penalty_method": derived["kl_penalty_method"],
           },
           "trainer.optim": {
               "gradient_accumulation_steps": derived["grad_accum"],
@@ -538,14 +529,14 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
       training_config=rl_cluster_lib.RLTrainingConfig(
           actor_optimizer=actor_opt,
           critic_optimizer=critic_opt,
+          mini_batch_size=(
+              int(cfg.cluster.training_config.mini_batch_size)
+              if getattr(cfg.cluster.training_config, "mini_batch_size", None)
+              is not None
+              else None
+          ),
           training_micro_batch_size=(
-              int(
-                  getattr(
-                      cfg.cluster.training_config,
-                      "training_micro_batch_size",
-                      0,
-                  )
-              )
+              int(cfg.cluster.training_config.training_micro_batch_size)
               if getattr(
                   cfg.cluster.training_config, "training_micro_batch_size", None
               )
@@ -585,29 +576,25 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
   return cluster_config
 
 
-def build_trainer(rl_cluster, cfg, derived, multi_turn_cfg):
+def build_trainer(rl_cluster, cfg, derived, _multi_turn_cfg):
   ppo_cfg = cfg.trainer.ppo
   ppo_config = PpoConfigExp(
       num_ppo_epochs=int(ppo_cfg.num_ppo_epochs),
-      mini_batch_size=int(ppo_cfg.mini_batch_size),
       gamma=float(ppo_cfg.gamma),
       gae_lambda=float(ppo_cfg.gae_lambda),
       beta=float(ppo_cfg.beta),
       epsilon=float(ppo_cfg.epsilon),
-      vf_coef=float(ppo_cfg.vf_coef),
       clip_range_value=float(ppo_cfg.clip_range_value),
-      entropy_coeff=float(ppo_cfg.entropy_coeff),
-      aggs_mode=str(ppo_cfg.aggs_mode),
+      entropy_coef=float(ppo_cfg.entropy_coef),
       epsilon_low=float(ppo_cfg.epsilon_low),
       epsilon_high=float(ppo_cfg.epsilon_high),
       epsilon_c=float(ppo_cfg.epsilon_c),
-      kl_penalty_method=str(ppo_cfg.kl_penalty_method),
   )
   trainer = PpoLearnerExp(
       rl_cluster=rl_cluster,
       ppo_config=ppo_config,
       reward_fns=_dummy_reward_fn,
-      multi_turn_cfg=multi_turn_cfg,
+      multi_turn_cfg=_multi_turn_cfg,
       multi_turn_processor=None,
       multi_turn_validation=False,
   )

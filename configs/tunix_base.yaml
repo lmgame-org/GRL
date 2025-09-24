@@ -53,6 +53,7 @@ cluster:
   offload_to_cpu: false
   training_config:
     # Scheduling and evaluation
+    mini_batch_size: 32
     training_micro_batch_size: 4
     eval_every_n_steps: -1  # -1 to let script derive
     max_steps: -1  # -1 to let script derive
@@ -77,15 +78,12 @@ cluster:
 trainer:
   ppo:
     num_ppo_epochs: 1
-    mini_batch_size: 32
     gamma: 1.0
     gae_lambda: 1.0
     beta: 0.001
     epsilon: 0.2
-    vf_coef: 1.0
     clip_range_value: 0.5
-    entropy_coeff: 0.001
-    aggs_mode: token-mean
+    entropy_coef: 0.001
     epsilon_low: 0.2
     epsilon_high: 0.28
     epsilon_c: 3.0
@@ -98,6 +96,7 @@ trainer:
     b2: 0.999
     weight_decay: 0.01
     max_grad_norm: 1.0
+    type: constant
 
 # ------ Model artifacts ------
 model:
