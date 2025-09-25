@@ -123,6 +123,7 @@ class PpoLearnerExp(PpoLearner):
     )
 
     # ===== Configure the actor (policy) trainer =====
+    # Use customized policy loss that accepts completion_mask
     self.rl_cluster.actor_trainer.with_loss_fn(ppo_policy_loss_fn, has_aux=True)
     self.rl_cluster.actor_trainer.with_gen_model_input_fn(
         lambda x: {
@@ -137,6 +138,7 @@ class PpoLearnerExp(PpoLearner):
     )
 
     # ===== Configure the critic (value) trainer =====
+    # Use customized critic loss that accepts completion_mask
     self.rl_cluster.critic_trainer.with_loss_fn(ppo_value_loss_fn, has_aux=True)
     self.rl_cluster.critic_trainer.with_gen_model_input_fn(
         lambda x: {
@@ -204,6 +206,9 @@ class PpoLearnerExp(PpoLearner):
       self._debug = os.getenv("GRL_DEBUG_TRAIN_LOOP", "1") != "0"
     if not self._debug:
       return
+    # Timer store for phase durations
+    if not hasattr(self, "_dbg_phase_start_ns"):
+      self._dbg_phase_start_ns = {}
     # Derive step
     try:
       step = self.rl_cluster.actor_trainer.train_steps
@@ -228,11 +233,32 @@ class PpoLearnerExp(PpoLearner):
     else:
       details = msg
 
+    # Track start/end to compute durations
+    duration_suffix = ""
+    try:
+      now_ns = time.monotonic_ns()
+      if event in {"start", "begin"}:
+        self._dbg_phase_start_ns[phase] = now_ns
+      elif event in {"done", "end", "stop"}:
+        start_ns = self._dbg_phase_start_ns.pop(phase, None)
+        if start_ns is not None:
+          elapsed_ms = (now_ns - start_ns) / 1_000_000.0
+          duration_suffix = f" duration_ms={elapsed_ms:.3f}"
+    except Exception:
+      pass
+
     logger = logging.getLogger("trainer")
     if details:
-      logger.info("phase=%s event=%s step=%s | %s", phase, event, step, details)
+      logger.info(
+          "phase=%s event=%s step=%s%s | %s",
+          phase,
+          event,
+          step,
+          duration_suffix,
+          details,
+      )
     else:
-      logger.info("phase=%s event=%s step=%s", phase, event, step)
+      logger.info("phase=%s event=%s step=%s%s", phase, event, step, duration_suffix)
 
   # ======= End Debug helper =====
 
@@ -408,7 +434,7 @@ class PpoLearnerExp(PpoLearner):
     logits_to_keep = completion_ids.shape[1]
 
     # ===== Compute log probs ======
-    self._dbg("compute: logps")
+    self._dbg("logps: start")
     # Compute log probs from the reference model. Shape = `[B, T]`.
     if self.ppo_config.beta != 0.0:
       ref_per_token_logps = self.rl_cluster.get_ref_per_token_logps(
@@ -431,9 +457,10 @@ class PpoLearnerExp(PpoLearner):
         completion_tokens=completion_ids,
         completion_mask=completion_mask.astype(jnp.int32),
     )
+    self._dbg("logps: done")
 
     # ===== Value computation ======
-    self._dbg("compute: values")
+    self._dbg("values: start")
     # Get values from the value model before model weights are updated.
     values = self.rl_cluster.get_values(
         prompt_tokens=prompt_ids,
@@ -445,9 +472,10 @@ class PpoLearnerExp(PpoLearner):
     # `values` start from the last *prompt* token. Shape: `[B, T]`.
     values = values[:, -logits_to_keep - 1 : -1]
     values = values * completion_mask
+    self._dbg("values: done")
 
     # ===== Reward computation ======
-    self._dbg("compute: rewards")
+    self._dbg("rewards: start")
     # Get rewards from the reward model. Eventual shape: `[B, T]`.
     if self._use_reward_model:
       scores = self.rl_cluster.get_rewards(
@@ -484,9 +512,10 @@ class PpoLearnerExp(PpoLearner):
           kl.astype(jnp.float32) * completion_mask.astype(jnp.float32)
       )
     # ======= End Modification =====
+    self._dbg("rewards: done")
 
     # ===== Compute advantages using Generalised Advantage Estimation ======
-    self._dbg("compute: advantages")
+    self._dbg("advantages: start")
     advantages, returns = ppo_helpers.compute_gae_advantages(
         rewards=rewards,
         values=values,
@@ -494,6 +523,7 @@ class PpoLearnerExp(PpoLearner):
         gamma=self.ppo_config.gamma,
         gae_lambda=self.ppo_config.gae_lambda,
     )
+    self._dbg("advantages: done")
 
     # ===== Rollout metrics logging (from filter/meta) =====
     if mt_metrics_dict is not None:
@@ -662,8 +692,9 @@ class PpoLearnerExp(PpoLearner):
             self.rl_cluster.sync_weights()
       except Exception:
         pass
-      self._dbg("initial: validation at step 0")
+      self._dbg("initial_validation: start")
       self._validate(None)
+      self._dbg("initial_validation: done")
       self._initial_eval_done = True
     # ======= End Modification =====
 
@@ -710,13 +741,15 @@ class PpoLearnerExp(PpoLearner):
           )
 
           curr_eval_ds = None
+          self._dbg("trainer: start")
           with jax.profiler.StepTraceAnnotation(
               "trainer", step_num=initial_steps
           ):
             while True:
               with sft_utils.time_measure(suppress_logging=True) as timer:
-                self._dbg("queue: waiting for train micro-batch")
+                self._dbg("queue_wait: start")
                 curr_train_ds = train_data_queue.get(block=True)
+                self._dbg("queue_wait: done")
 
               if curr_train_ds is None:
                 self._dbg("queue: train micro-batches exhausted")
@@ -753,36 +786,38 @@ class PpoLearnerExp(PpoLearner):
                 )
                 curr_eval_ds = eval_data_queue.get(block=True)
                 self._dbg("eval: eval batch ready")
+              self._dbg("update_actor: start")
               self.rl_cluster.update_actor(
                   curr_train_ds,
                   curr_eval_ds,
                   skip_jit,
               )  # loop over μ
-              self._dbg("update: actor done")
+              self._dbg("update_actor: done")
               if hasattr(self.rl_cluster, "critic_trainer"):
-                self._dbg("update: critic start")
+                self._dbg("update_critic: start")
                 self.rl_cluster.update_critic(
                     curr_train_ds,
                     curr_eval_ds,
                     skip_jit,
                 )  # loop over μ
-                self._dbg("update: critic done")
+                self._dbg("update_critic: done")
 
           # call to throw stop iteration as a singal to break the loop
-          self._dbg("rollout: join prepare_data job")
+          self._dbg("prepare_data_join: start")
           future.result()
-          self._dbg("rollout: prepare_data job joined")
+          self._dbg("prepare_data_join: done")
           # sync the iter steps with internel trainer, this is based on the
           # assumption that the trainer internally doesn't reset the iter steps.
           # there is current a unit test to ensure this assumption.
           self._iter_steps = self.rl_cluster.actor_trainer.iter_steps
 
         if self.should_sync_weights:
+          self._dbg("sync_weights: start")
           with jax.profiler.StepTraceAnnotation(
               "sync_sampler_weights", step_num=initial_steps
           ):
-            self._dbg("sync: sampler weights")
             self.rl_cluster.sync_weights()
+          self._dbg("sync_weights: done")
         else:
           self.rl_cluster.global_steps += (
               1  # manually increment the global steps.
@@ -840,6 +875,7 @@ def ppo_value_loss_fn(
       completion_ids,
       pad_id,
       eos_id,
+      completion_mask=completion_mask.astype(jnp.int32),
       stop_gradient=False,
   )
   vpreds = vpreds[:, -logits_to_keep - 1 : -1]
@@ -889,6 +925,7 @@ def ppo_policy_loss_fn(
       completion_tokens=completion_ids,
       pad_id=pad_id,
       eos_id=eos_id,
+      completion_mask=completion_mask.astype(jnp.int32),
       stop_gradient=False,
   )
 
