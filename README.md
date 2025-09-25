@@ -59,7 +59,7 @@ GRL (Game Reinforcement Learning) is an open‑source framework that post‑trai
    cd GRL
 
    # create a conda environment
-   conda create --name grl python=3.12 -y
+   conda create --name grl python=3.12
    conda activate grl
 
    # Submodule installation
