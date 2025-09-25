@@ -45,13 +45,14 @@ def _assert_float32(x, name: str):
 @dataclasses.dataclass(slots=True, kw_only=True)
 class PpoConfigExp(PpoConfig):
   """Placeholder subclass of `PpoConfig` for future overrides."""
-  pass
 
+  pass
 
 
 @flax.struct.dataclass(frozen=True)
 class TrainExampleExp(TrainExample):
   """Placeholder subclass of `TrainExample` for future overrides."""
+
   pass
 
 
@@ -162,10 +163,12 @@ class PpoLearnerExp(PpoLearner):
         actor_rl_metrics_to_log
     )
 
-    self.rl_cluster.critic_trainer.with_rl_metrics_to_log({
-        "vpred_mean": np.mean,
-        "vf_clipfrac": np.mean,
-    })
+    self.rl_cluster.critic_trainer.with_rl_metrics_to_log(
+        {
+            "vpred_mean": np.mean,
+            "vf_clipfrac": np.mean,
+        }
+    )
 
     # ====== Modification: add multi-turn rollout initialization =====
     # Initialize when config is provided; otherwise remain None (fallback to single-turn)
@@ -195,7 +198,6 @@ class PpoLearnerExp(PpoLearner):
     self._last_rollout_batch = None
     # ======= End Modification =====
 
-  
   # ====== Debug helper =====
   def _dbg(self, message: str) -> None:
     if not hasattr(self, "_debug"):
@@ -236,48 +238,47 @@ class PpoLearnerExp(PpoLearner):
 
   # ====== Modification: add helper to convert multi-turn rollout batch =====
   def convert_multi_rollout_batch(
-        self,
-        batch,
-        *,
-        pad_value: int,
-        max_prompt_length: int,
-    ):
-        """Convert a multi-turn rollout batch to JAX tensors for PPO.
+      self,
+      batch,
+      *,
+      pad_value: int,
+      max_prompt_length: int,
+  ):
+    """Convert a multi-turn rollout batch to JAX tensors for PPO.
 
-        Splitting rule:
-        - Fixed prompt length Pmax=1: prompt is the first token only
-        - completion_ids are all tokens after the first token
-        - completion_mask is the provided loss_mask
-        - eos_idx is derived from completion_mask
-        """
-        inp = np.array(batch.input_ids)  # [B, L]
-        loss_m = np.array(batch.loss_mask)  # [B, L-1], values in {0,1}
-        B, L = inp.shape
+    Splitting rule:
+    - Fixed prompt length Pmax=1: prompt is the first token only
+    - completion_ids are all tokens after the first token
+    - completion_mask is the provided loss_mask
+    - eos_idx is derived from completion_mask
+    """
+    inp = np.array(batch.input_ids)  # [B, L]
+    loss_m = np.array(batch.loss_mask)  # [B, L-1], values in {0,1}
+    B, L = inp.shape
 
-        # Fixed Pmax = 1
-        prompt_ids = jnp.array(inp[:, :1])  # [B, 1]
-        prompt_mask = (prompt_ids != pad_value).astype("int32")
+    # Fixed Pmax = 1
+    prompt_ids = jnp.array(inp[:, :1])  # [B, 1]
+    prompt_mask = (prompt_ids != pad_value).astype("int32")
 
-        # Completion is tokens after the first token; ensure at least width 1
-        if L - 1 <= 0:
-            completion_ids_arr = np.full((B, 1), pad_value, dtype=inp.dtype)
-            completion_mask_arr = np.zeros((B, 1), dtype=np.int32)
-        else:
-            completion_ids_arr = inp[:, 1:]
-            completion_mask_arr = loss_m.astype(np.int32)
-        completion_ids = jnp.array(completion_ids_arr)
-        completion_mask = jnp.array(completion_mask_arr).astype("int32")
-        # Derive eos_idx from completion_mask for robustness
-        eos_idx = jnp.max(
-            common.build_positions_from_mask(completion_mask),
-            axis=-1,
-        ).astype(jnp.int32)
+    # Completion is tokens after the first token; ensure at least width 1
+    if L - 1 <= 0:
+      completion_ids_arr = np.full((B, 1), pad_value, dtype=inp.dtype)
+      completion_mask_arr = np.zeros((B, 1), dtype=np.int32)
+    else:
+      completion_ids_arr = inp[:, 1:]
+      completion_mask_arr = loss_m.astype(np.int32)
+    completion_ids = jnp.array(completion_ids_arr)
+    completion_mask = jnp.array(completion_mask_arr).astype("int32")
+    # Derive eos_idx from completion_mask for robustness
+    eos_idx = jnp.max(
+        common.build_positions_from_mask(completion_mask),
+        axis=-1,
+    ).astype(jnp.int32)
 
-
-        return prompt_ids, completion_ids, prompt_mask, completion_mask, eos_idx
+    return prompt_ids, completion_ids, prompt_mask, completion_mask, eos_idx
 
   # ======= End Modification =====
-  
+
   # ====== Modification: Simple validation rollout using buffered metrics (EVAL) =====
   def _validate(self, eval_ds: Iterable[TrainingInputT] | None) -> None:
     """Run one validation rollout and log metrics via buffer_metrics under EVAL.
@@ -330,6 +331,7 @@ class PpoLearnerExp(PpoLearner):
 
     self.validation_multi_turn_rollout.reset()
     self._dbg("validation: done")
+
   # ======= End Modification =====
 
   def _generate_and_compute_advantage(
@@ -358,11 +360,26 @@ class PpoLearnerExp(PpoLearner):
     if getattr(self, "multi_turn_rollout", None) is None:
       raise RuntimeError("Multi-turn rollout is required but not configured.")
 
+    # Collect rollout metrics for buffered logging
+    mt_metrics_dict = None
+    meta_metrics_dict = None
+
     try:
       self._dbg("rollout: start")
       mt_batch = self.multi_turn_rollout.rollout()
-      mt_batch_filtered, _ = self.multi_turn_rollout.filter_rollout_batch(mt_batch)
+      mt_batch_filtered, mt_metrics = (
+          self.multi_turn_rollout.filter_rollout_batch(mt_batch)
+      )
       self._last_rollout_batch = mt_batch_filtered
+      # Prepare metrics dictionaries (filter metrics + meta metrics)
+      try:
+        mt_metrics_dict = dict(mt_metrics)
+      except Exception:
+        mt_metrics_dict = None
+      try:
+        meta_metrics_dict = dict(mt_batch_filtered.meta_info.get("metrics", {}))
+      except Exception:
+        meta_metrics_dict = None
     finally:
       self.multi_turn_rollout.reset()
 
@@ -477,6 +494,24 @@ class PpoLearnerExp(PpoLearner):
         gamma=self.ppo_config.gamma,
         gae_lambda=self.ppo_config.gae_lambda,
     )
+
+    # ===== Rollout metrics logging (from filter/meta) =====
+    if mt_metrics_dict is not None:
+      try:
+        for name, value in mt_metrics_dict.items():
+          self.rl_cluster.buffer_metrics(
+              {name: (float(value), np.mean)}, mode=mode
+          )
+      except Exception:
+        pass
+    if meta_metrics_dict is not None:
+      try:
+        for name, value in meta_metrics_dict.items():
+          self.rl_cluster.buffer_metrics(
+              {name: (float(value), np.mean)}, mode=mode
+          )
+      except Exception:
+        pass
 
     # ===== Metric logging ======
     # Log raw scores from the reward model fn
@@ -777,6 +812,7 @@ class PpoLearnerExp(PpoLearner):
       except StopIteration:
         break
     self.rl_cluster.close()
+
 
 def ppo_value_loss_fn(
     model: nnx.Module,

@@ -624,7 +624,9 @@ def main(cfg: DictConfig):
   _print_config_summary(cfg, derived)
 
   # Build dataset (use derived num_batches and mini_batch_size for placeholder sizing)
-  dataset = get_dataset(derived["num_batches"], derived["mini_batch_size"], "train")
+  dataset = get_dataset(
+      derived["num_batches"], derived["mini_batch_size"], "train"
+  )
 
   # Init models
   policy_qwen2, critic_qwen2, qwen2_ref, tokenizer, mesh, model_config = (
