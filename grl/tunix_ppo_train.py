@@ -100,6 +100,10 @@ def derive_hparams(cfg):
   weight_decay = float(cfg.trainer.optim.weight_decay)
   max_grad_norm = float(cfg.trainer.optim.max_grad_norm)
   grad_accum = int(cfg.trainer.optim.gradient_accumulation_steps)
+  try:
+    optim_type = str(cfg.trainer.optim.type)
+  except Exception:
+    optim_type = "constant"
 
   # Training loop setup (cluster.training_config)
   num_batches = int(200 * training_batch_size / max(1, mini_batch_size))
@@ -166,6 +170,7 @@ def derive_hparams(cfg):
       "weight_decay": weight_decay,
       "max_grad_norm": max_grad_norm,
       "grad_accum": grad_accum,
+      "optim_type": optim_type,
       "run_root": str(run_root),
       "intermediate_ckpt_dir": intermediate_ckpt_dir,
       "ckpt_dir": ckpt_dir,
@@ -180,19 +185,19 @@ def derive_hparams(cfg):
 # ======================= Dataset helpers =======================
 
 
-def get_dataset(num_batches: int, _: str | None, split: str = "train"):
+def get_dataset(num_batches: int, batch_size: int, split: str = "train"):
   # For multi-turn rollouts, return a lightweight empty iterator of fixed length
-  del _
   del split
 
   class _Empty:
 
     def __iter__(self):
       for _ in range(num_batches):
-        yield {}
+        # Minimal placeholder to satisfy trainer interfaces; actual data comes from rollout
+        yield {"prompts": [""] * batch_size}
 
     def __getitem__(self, idx):
-      return {}
+      return {"prompts": [""] * batch_size}
 
     def __len__(self):
       return num_batches
@@ -454,14 +459,22 @@ def reset_dir(path: str):
 
 
 def build_optimizers(derived):
+  if str(derived.get("optim_type", "constant")).lower() == "constant":
+    actor_lr_schedule = optax.constant_schedule(derived["actor_lr"])
+    critic_lr_schedule = optax.constant_schedule(derived["critic_lr"])
+  else:
+    # Fallback: use fixed float if an unknown type is provided
+    actor_lr_schedule = derived["actor_lr"]
+    critic_lr_schedule = derived["critic_lr"]
+
   actor_opt = optax.adamw(
-      learning_rate=optax.constant_schedule(derived["actor_lr"]),
+      learning_rate=actor_lr_schedule,
       b1=derived["b1"],
       b2=derived["b2"],
       weight_decay=derived["weight_decay"],
   )
   critic_opt = optax.adamw(
-      learning_rate=optax.constant_schedule(derived["critic_lr"]),
+      learning_rate=critic_lr_schedule,
       b1=derived["b1"],
       b2=derived["b2"],
       weight_decay=derived["weight_decay"],
@@ -589,6 +602,7 @@ def build_trainer(rl_cluster, cfg, derived, _multi_turn_cfg):
       epsilon_low=float(ppo_cfg.epsilon_low),
       epsilon_high=float(ppo_cfg.epsilon_high),
       epsilon_c=float(ppo_cfg.epsilon_c),
+      kl_method=str(ppo_cfg.kl_method),
   )
   trainer = PpoLearnerExp(
       rl_cluster=rl_cluster,
@@ -609,8 +623,8 @@ def main(cfg: DictConfig):
   derived = derive_hparams(cfg)
   _print_config_summary(cfg, derived)
 
-  # Build dataset (use derived num_batches)
-  dataset = get_dataset(derived["num_batches"], "train")
+  # Build dataset (use derived num_batches and mini_batch_size for placeholder sizing)
+  dataset = get_dataset(derived["num_batches"], derived["mini_batch_size"], "train")
 
   # Init models
   policy_qwen2, critic_qwen2, qwen2_ref, tokenizer, mesh, model_config = (

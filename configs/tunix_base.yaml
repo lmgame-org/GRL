@@ -87,6 +87,7 @@ trainer:
     epsilon_low: 0.2
     epsilon_high: 0.28
     epsilon_c: 3.0
+    kl_method: kl
     kl_penalty_method: k1
   optim:
     gradient_accumulation_steps: 8
