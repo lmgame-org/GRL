@@ -355,7 +355,7 @@ def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
     )
   except Exception:
     pass
-  return nnx.merge(gdef, src_state)
+  return nnx.merge(gdef, src_state, copy=True)
 
 
 def build_models_and_tokenizer(cfg, derived):
@@ -430,7 +430,7 @@ def get_critic_model(
     )
   graph_def, _ = nnx.split(abs_mod)
   ref_state = nnx.state(_ref_model)
-  backbone = nnx.merge(graph_def, ref_state)
+  backbone = nnx.merge(graph_def, ref_state, copy=True)
 
   critic = Qwen2CriticTokenClass(backbone, rngs=nnx.Rngs(params=0))
   crit_graph_def, crit_state = nnx.split(critic)
@@ -615,6 +615,13 @@ def build_trainer(rl_cluster, cfg, derived, _multi_turn_cfg):
   return trainer
 
 
+# ======================= Debug helpers =======================
+def _tree_allclose(a, b, rtol=1e-5, atol=1e-6):
+  return jax.tree_util.tree_all(
+      jax.tree.map(lambda x, y: jnp.allclose(x, y, rtol=rtol, atol=atol), a, b)
+  )
+
+
 @hydra_main(
     config_path="../configs", config_name="tunix_base", version_base=None
 )
@@ -632,6 +639,15 @@ def main(cfg: DictConfig):
   policy_qwen2, critic_qwen2, qwen2_ref, tokenizer, mesh, model_config = (
       build_models_and_tokenizer(cfg, derived)
   )
+
+  # Debug: check distinct objects and initial parameter equality
+  try:
+    print("policy/ref ids:", id(policy_qwen2), id(qwen2_ref))
+    pol_state = nnx.state(policy_qwen2)
+    ref_state = nnx.state(qwen2_ref)
+    print("initial states equal:", _tree_allclose(pol_state, ref_state))
+  except Exception as e:
+    print("[debug] sanity check failed:", e)
 
   # RL cluster and trainer
   cluster_config = build_cluster_config(mesh, tokenizer, derived, cfg)

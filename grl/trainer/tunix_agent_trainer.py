@@ -578,6 +578,18 @@ class PpoLearnerExp(PpoLearner):
           },
           mode=mode,
       )
+      # ===== MODIFICATION: Log KL penalty coefficient (beta) =====
+      self.rl_cluster.buffer_metrics(
+          {
+              "actor/reward_kl_penalty_coeff": (
+                  float(self.ppo_config.beta),
+                  np.mean,
+              )
+          },
+          mode=mode,
+      )
+      # ===== END MODIFICATION =====
+
 
     # Log completion lengths.
     agg_completion_mask = completion_mask.sum(axis=-1)
