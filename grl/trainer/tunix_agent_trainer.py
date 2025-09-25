@@ -694,21 +694,29 @@ class PpoLearnerExp(PpoLearner):
       skip_jit: bool = False,
   ) -> None:
     """Main entry point for the training loop."""
-    # # ====== Modification: Initial validation at step 0 using buffered metrics =====
-    # if not hasattr(self, "_initial_eval_done") or not self._initial_eval_done:
-    #   try:
-    #     if self.should_sync_weights:
-    #       with jax.profiler.StepTraceAnnotation(
-    #           "sync_sampler_weights", step_num=0
-    #       ):
-    #         self.rl_cluster.sync_weights()
-    #   except Exception:
-    #     pass
-    #   self._dbg("initial_validation: start")
-    #   self._validate(None)
-    #   self._dbg("initial_validation: done")
-    #   self._initial_eval_done = True
-    # # ======= End Modification =====
+    # ====== Modification: Guarded initial validation at non-decreasing step =====
+    # Ensure first validation logs at step >= 1 to avoid out-of-order logging.
+    if not hasattr(self, "_initial_eval_done") or not self._initial_eval_done:
+      try:
+        if self.should_sync_weights:
+          with jax.profiler.StepTraceAnnotation(
+              "sync_sampler_weights", step_num=0
+          ):
+            self.rl_cluster.sync_weights()  # increments global_steps
+        else:
+          # No sync -> bump global_steps to at least 1 so eval logs at step 1
+          try:
+            if getattr(self.rl_cluster, "global_steps", 0) < 1:
+              self.rl_cluster.global_steps = 1
+          except Exception:
+            pass
+      except Exception:
+        pass
+      self._dbg("initial_validation: start")
+      self._validate(None)
+      self._dbg("initial_validation: done")
+      self._initial_eval_done = True
+    # ======= End Modification =====
 
     full_batch_iterator = iter(train_ds)
     first_item = next(full_batch_iterator)
