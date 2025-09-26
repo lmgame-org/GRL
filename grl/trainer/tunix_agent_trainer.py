@@ -885,22 +885,21 @@ class PpoLearnerExp(PpoLearner):
           self.rl_cluster.global_steps += (
               1  # manually increment the global steps.
           )
-        # ====== Modification: Robust eval trigger on crossed intervals (after weight sync) =====
+        # ====== Modification: Simplified validation trigger using global_steps and grad_acc_steps =====
         try:
           eval_every = (
               self.rl_cluster.cluster_config.training_config.eval_every_n_steps
           )
         except Exception:
           eval_every = 0
-        if not hasattr(self, "_last_eval_check_step"):
-          self._last_eval_check_step = 0
         if eval_every and eval_every > 0:
-          prev_q = self._last_eval_check_step // eval_every
-          curr_q = self.rl_cluster.actor_trainer.train_steps // eval_every
-          if curr_q > prev_q and self.rl_cluster.actor_trainer.train_steps > 0:
-            self._dbg("validation: trigger after weight sync")
+          grad_acc = getattr(self, "grad_acc_steps", 1) or 1
+          denom = max(1, eval_every // grad_acc)
+          if self.rl_cluster.global_steps > 0 and (
+              self.rl_cluster.global_steps % denom == 0
+          ):
+            self._dbg("validation: trigger on global_steps boundary")
             self._validate(None)
-          self._last_eval_check_step = self.rl_cluster.actor_trainer.train_steps
         # ======= End Modification =====
         if (
             self.rl_cluster.actor_trainer.train_steps

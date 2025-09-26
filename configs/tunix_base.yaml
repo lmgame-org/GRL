@@ -57,7 +57,7 @@ cluster:
     training_micro_batch_size: 4
     rollout_micro_batch_size: 32
     compute_logps_micro_batch_size: 32
-    eval_every_n_steps: -1 # must be divisible by gradient_accumulation_steps
+    eval_every_n_steps: 8 # must be divisible by gradient_accumulation_steps
     max_steps: -1  # -1 to let script derive
     checkpoint:
       save_interval_steps: 500
