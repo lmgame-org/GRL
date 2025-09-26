@@ -279,7 +279,7 @@ class PpoLearnerExp(PpoLearner):
     - eos_idx is derived from completion_mask
     """
     inp = np.array(batch.input_ids)  # [B, L]
-    loss_m = np.array(batch.loss_mask)  # [B, L-1], values in {0,1}
+    loss_m = np.array(batch.loss_mask)  # [B, L-1], values in {0,1} (int32)
     B, L = inp.shape
 
     # Fixed Pmax = 1
@@ -292,9 +292,11 @@ class PpoLearnerExp(PpoLearner):
       completion_mask_arr = np.zeros((B, 1), dtype=np.int32)
     else:
       completion_ids_arr = inp[:, 1:]
-      completion_mask_arr = loss_m.astype(np.int32)
+      # loss_m is already int32 from rollout; reuse directly without casting
+      completion_mask_arr = loss_m
     completion_ids = jnp.array(completion_ids_arr)
-    completion_mask = jnp.array(completion_mask_arr).astype("int32")
+    # Keep mask as int32 once to avoid repeated casts downstream
+    completion_mask = jnp.array(completion_mask_arr)
     # Derive eos_idx from completion_mask for robustness
     eos_idx = jnp.max(
         common.build_positions_from_mask(completion_mask),
@@ -426,8 +428,8 @@ class PpoLearnerExp(PpoLearner):
             self._last_rollout_batch, pad_value=pad_value, max_prompt_length=0
         )
     )
-    # Ensure float32 mask for stable arithmetic; cast to int32 when needed
-    completion_mask = completion_mask.astype(jnp.float32)
+    # Prepare a float mask only once where needed for arithmetic
+    completion_mask_f = completion_mask.astype(jnp.float32)
     # ======= End Modification =====
 
     batch_size = completion_ids.shape[0]
@@ -442,7 +444,7 @@ class PpoLearnerExp(PpoLearner):
           completion_tokens=completion_ids,
           pad_id=pad_value,
           eos_id=eos_value,
-          completion_mask=completion_mask.astype(jnp.int32),
+          completion_mask=completion_mask,
       )
     else:
       ref_per_token_logps = None
@@ -455,7 +457,7 @@ class PpoLearnerExp(PpoLearner):
     old_per_token_logps = self.rl_cluster.get_old_per_token_logps(
         prompt_tokens=prompt_ids,
         completion_tokens=completion_ids,
-        completion_mask=completion_mask.astype(jnp.int32),
+        completion_mask=completion_mask,
     )
     self._dbg("logps: done")
 
@@ -467,11 +469,11 @@ class PpoLearnerExp(PpoLearner):
         completion_tokens=completion_ids,
         pad_id=pad_value,
         eos_id=eos_value,
-        completion_mask=completion_mask.astype(jnp.int32),
+        completion_mask=completion_mask,
     )
     # `values` start from the last *prompt* token. Shape: `[B, T]`.
     values = values[:, -logits_to_keep - 1 : -1]
-    values = values * completion_mask
+    values = values * completion_mask_f
     self._dbg("values: done")
 
     # ===== Reward computation ======
@@ -508,9 +510,7 @@ class PpoLearnerExp(PpoLearner):
           ref_per_token_logps,
           method=self.ppo_config.kl_method,
       )
-      rewards = rewards - self.ppo_config.beta * (
-          kl.astype(jnp.float32) * completion_mask.astype(jnp.float32)
-      )
+      rewards = rewards - self.ppo_config.beta * (kl * completion_mask_f)
     # ======= End Modification =====
     self._dbg("rewards: done")
 
@@ -519,7 +519,7 @@ class PpoLearnerExp(PpoLearner):
     advantages, returns = ppo_helpers.compute_gae_advantages(
         rewards=rewards,
         values=values,
-        completion_mask=completion_mask,
+        completion_mask=completion_mask_f,
         gamma=self.ppo_config.gamma,
         gae_lambda=self.ppo_config.gae_lambda,
     )
@@ -895,7 +895,7 @@ def ppo_value_loss_fn(
       completion_ids,
       pad_id,
       eos_id,
-      completion_mask=completion_mask.astype(jnp.int32),
+      completion_mask=completion_mask,
       stop_gradient=False,
   )
   vpreds = vpreds[:, -logits_to_keep - 1 : -1]
@@ -945,7 +945,7 @@ def ppo_policy_loss_fn(
       completion_tokens=completion_ids,
       pad_id=pad_id,
       eos_id=eos_id,
-      completion_mask=completion_mask.astype(jnp.int32),
+      completion_mask=completion_mask,
       stop_gradient=False,
   )
 
