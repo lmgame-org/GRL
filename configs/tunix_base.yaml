@@ -55,7 +55,7 @@ cluster:
     # Scheduling and evaluation
     mini_batch_size: 32
     training_micro_batch_size: 4
-    eval_every_n_steps: -1  # must be divisible by gradient_accumulation_steps
+    eval_every_n_steps: -1 # must be divisible by gradient_accumulation_steps
     max_steps: -1  # -1 to let script derive
     checkpoint:
       save_interval_steps: 500

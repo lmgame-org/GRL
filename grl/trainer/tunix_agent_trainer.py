@@ -428,6 +428,19 @@ class PpoLearnerExp(PpoLearner):
             self._last_rollout_batch, pad_value=pad_value, max_prompt_length=0
         )
     )
+    try:
+      self._dbg(
+          "shapes: prompt_ids=%s prompt_mask=%s completion_ids=%s completion_mask=%s eos_idx=%s"
+          % (
+              tuple(prompt_ids.shape),
+              tuple(prompt_mask.shape),
+              tuple(completion_ids.shape),
+              tuple(completion_mask.shape),
+              tuple(eos_idx.shape),
+          )
+      )
+    except Exception:
+      pass
     # Prepare a float mask only once where needed for arithmetic
     completion_mask_f = completion_mask.astype(jnp.float32)
     # ======= End Modification =====
@@ -460,6 +473,16 @@ class PpoLearnerExp(PpoLearner):
         completion_mask=completion_mask,
     )
     self._dbg("logps: done")
+    try:
+      if ref_per_token_logps is not None:
+        self._dbg(
+            "logps: ref_shape=%s old_shape=%s"
+            % (tuple(ref_per_token_logps.shape), tuple(old_per_token_logps.shape))
+        )
+      else:
+        self._dbg("logps: old_shape=%s" % (tuple(old_per_token_logps.shape),))
+    except Exception:
+      pass
 
     # ===== Value computation ======
     self._dbg("values: start")
@@ -475,6 +498,10 @@ class PpoLearnerExp(PpoLearner):
     values = values[:, -logits_to_keep - 1 : -1]
     values = values * completion_mask_f
     self._dbg("values: done")
+    try:
+      self._dbg("values: shape=%s" % (tuple(values.shape),))
+    except Exception:
+      pass
 
     # ===== Reward computation ======
     self._dbg("rewards: start")
@@ -513,6 +540,13 @@ class PpoLearnerExp(PpoLearner):
       rewards = rewards - self.ppo_config.beta * (kl * completion_mask_f)
     # ======= End Modification =====
     self._dbg("rewards: done")
+    try:
+      self._dbg(
+          "rewards: tensor_shape=%s last_token_scores_shape=%s"
+          % (tuple(rewards.shape), tuple(last_token_scores.shape))
+      )
+    except Exception:
+      pass
 
     # ===== Compute advantages using Generalised Advantage Estimation ======
     self._dbg("advantages: start")
@@ -524,6 +558,13 @@ class PpoLearnerExp(PpoLearner):
         gae_lambda=self.ppo_config.gae_lambda,
     )
     self._dbg("advantages: done")
+    try:
+      self._dbg(
+          "advantages: shapes advantages=%s returns=%s"
+          % (tuple(advantages.shape), tuple(returns.shape))
+      )
+    except Exception:
+      pass
 
     # ===== Rollout metrics logging (from filter/meta) =====
     if mt_metrics_dict is not None:
@@ -752,7 +793,7 @@ class PpoLearnerExp(PpoLearner):
           future = self.executor.submit(
               self._prepare_data,
               iterator=train_iterator,
-              proceed_num_steps=1,
+              proceed_num_steps=self.grad_acc_steps,
               sample_repeat=self._num_generations(),
               batch_repeat=self._num_iterations(),
               data_queue=train_data_queue,
@@ -786,26 +827,28 @@ class PpoLearnerExp(PpoLearner):
                     mode=rl_cluster_lib.Mode.TRAIN,
                 )
 
-              if (
-                  eval_ds
-                  and not curr_eval_ds
-                  and self.rl_cluster.actor_trainer.train_steps
-                  % self.rl_cluster.cluster_config.training_config.eval_every_n_steps
-                  == 0
-              ):
-                self._eval_iter_steps = 0
-                self._dbg("eval: prepare eval data")
-                self._prepare_data(
-                    iterator=iter(eval_ds),
-                    proceed_num_steps=-1,
-                    sample_repeat=self._num_generations(),
-                    batch_repeat=1,
-                    data_queue=eval_data_queue,
-                    async_loading=False,
-                    mode=rl_cluster_lib.Mode.EVAL,
-                )
-                curr_eval_ds = eval_data_queue.get(block=True)
-                self._dbg("eval: eval batch ready")
+              # ===== Modification: disable inline eval data preparation in inner loop =====
+              # if (
+              #     eval_ds
+              #     and not curr_eval_ds
+              #     and self.rl_cluster.actor_trainer.train_steps
+              #     % self.rl_cluster.cluster_config.training_config.eval_every_n_steps
+              #     == 0
+              # ):
+              #   self._eval_iter_steps = 0
+              #   self._dbg("eval: prepare eval data")
+              #   self._prepare_data(
+              #       iterator=iter(eval_ds),
+              #       proceed_num_steps=-1,
+              #       sample_repeat=self._num_generations(),
+              #       batch_repeat=1,
+              #       data_queue=eval_data_queue,
+              #       async_loading=False,
+              #       mode=rl_cluster_lib.Mode.EVAL,
+              #   )
+              #   curr_eval_ds = eval_data_queue.get(block=True)
+              #   self._dbg("eval: eval batch ready")
+              # ===== End Modification =====
               self._dbg("update_actor: start")
               self.rl_cluster.update_actor(
                   curr_train_ds,
