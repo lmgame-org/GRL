@@ -556,6 +556,24 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
               is not None
               else None
           ),
+          rollout_micro_batch_size=(
+              int(cfg.cluster.training_config.rollout_micro_batch_size)
+              if getattr(
+                  cfg.cluster.training_config, "rollout_micro_batch_size", None
+              )
+              is not None
+              else int(cfg.cluster.training_config.mini_batch_size)
+          ),
+          compute_logps_micro_batch_size=(
+              int(cfg.cluster.training_config.compute_logps_micro_batch_size)
+              if getattr(
+                  cfg.cluster.training_config,
+                  "compute_logps_micro_batch_size",
+                  None,
+              )
+              is not None
+              else int(cfg.cluster.training_config.mini_batch_size)
+          ),
           eval_every_n_steps=derived["eval_every_n_steps"],
           max_steps=derived["max_steps"],
           gradient_accumulation_steps=derived["grad_accum"],
