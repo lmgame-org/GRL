@@ -258,7 +258,9 @@ class PpoLearnerExp(PpoLearner):
           details,
       )
     else:
-      logger.info("phase=%s event=%s step=%s%s", phase, event, step, duration_suffix)
+      logger.info(
+          "phase=%s event=%s step=%s%s", phase, event, step, duration_suffix
+      )
 
   # ======= End Debug helper =====
 
@@ -315,7 +317,6 @@ class PpoLearnerExp(PpoLearner):
     - No advantage computation or model updates.
     - Uses RLCluster.buffer_metrics so logs are aggregated on global steps.
     """
-    self._dbg("validation: start")
     if self.validation_multi_turn_rollout is None:
       if self._multi_turn_cfg is None:
         raise RuntimeError(
@@ -330,7 +331,9 @@ class PpoLearnerExp(PpoLearner):
       )
 
     # Run a single validation rollout (no filtering)
+    self._dbg("rollout_val: start")
     mt_batch = self.validation_multi_turn_rollout.rollout()
+    self._dbg("rollout_val: done")
 
     # === metrics (EVAL): rollout meta metrics ===
     metrics_dict = dict(mt_batch.meta_info.get("metrics", {}))
@@ -358,7 +361,6 @@ class PpoLearnerExp(PpoLearner):
       pass
 
     self.validation_multi_turn_rollout.reset()
-    self._dbg("validation: done")
 
   # ======= End Modification =====
 
@@ -408,6 +410,7 @@ class PpoLearnerExp(PpoLearner):
         meta_metrics_dict = dict(mt_batch_filtered.meta_info.get("metrics", {}))
       except Exception:
         meta_metrics_dict = None
+      self._dbg("rollout: done")
     finally:
       self.multi_turn_rollout.reset()
 
@@ -416,31 +419,14 @@ class PpoLearnerExp(PpoLearner):
           "Multi-turn rollout is required but missing _last_rollout_batch."
       )
 
-    # Log basic batch shape from rollout
-    try:
-      _shape = np.array(self._last_rollout_batch.input_ids).shape
-      self._dbg(f"rollout: done batch_shape={_shape}")
-    except Exception:
-      pass
+    # Log basic batch shape from rollout (removed detailed shape logging)
 
     prompt_ids, completion_ids, prompt_mask, completion_mask, eos_idx = (
         self.convert_multi_rollout_batch(
             self._last_rollout_batch, pad_value=pad_value, max_prompt_length=0
         )
     )
-    try:
-      self._dbg(
-          "shapes: prompt_ids=%s prompt_mask=%s completion_ids=%s completion_mask=%s eos_idx=%s"
-          % (
-              tuple(prompt_ids.shape),
-              tuple(prompt_mask.shape),
-              tuple(completion_ids.shape),
-              tuple(completion_mask.shape),
-              tuple(eos_idx.shape),
-          )
-      )
-    except Exception:
-      pass
+
     # Prepare a float mask only once where needed for arithmetic
     completion_mask_f = completion_mask.astype(jnp.float32)
     # ======= End Modification =====
@@ -449,7 +435,6 @@ class PpoLearnerExp(PpoLearner):
     logits_to_keep = completion_ids.shape[1]
 
     # ===== Compute log probs ======
-    self._dbg("logps: start")
     # Compute log probs from the reference model. Shape = `[B, T]`.
     if self.ppo_config.beta != 0.0:
       ref_per_token_logps = self.rl_cluster.get_ref_per_token_logps(
@@ -472,20 +457,8 @@ class PpoLearnerExp(PpoLearner):
         completion_tokens=completion_ids,
         completion_mask=completion_mask,
     )
-    self._dbg("logps: done")
-    try:
-      if ref_per_token_logps is not None:
-        self._dbg(
-            "logps: ref_shape=%s old_shape=%s"
-            % (tuple(ref_per_token_logps.shape), tuple(old_per_token_logps.shape))
-        )
-      else:
-        self._dbg("logps: old_shape=%s" % (tuple(old_per_token_logps.shape),))
-    except Exception:
-      pass
 
     # ===== Value computation ======
-    self._dbg("values: start")
     # Get values from the value model before model weights are updated.
     values = self.rl_cluster.get_values(
         prompt_tokens=prompt_ids,
@@ -497,14 +470,8 @@ class PpoLearnerExp(PpoLearner):
     # `values` start from the last *prompt* token. Shape: `[B, T]`.
     values = values[:, -logits_to_keep - 1 : -1]
     values = values * completion_mask_f
-    self._dbg("values: done")
-    try:
-      self._dbg("values: shape=%s" % (tuple(values.shape),))
-    except Exception:
-      pass
 
     # ===== Reward computation ======
-    self._dbg("rewards: start")
     # Get rewards from the reward model. Eventual shape: `[B, T]`.
     if self._use_reward_model:
       scores = self.rl_cluster.get_rewards(
@@ -539,17 +506,8 @@ class PpoLearnerExp(PpoLearner):
       )
       rewards = rewards - self.ppo_config.beta * (kl * completion_mask_f)
     # ======= End Modification =====
-    self._dbg("rewards: done")
-    try:
-      self._dbg(
-          "rewards: tensor_shape=%s last_token_scores_shape=%s"
-          % (tuple(rewards.shape), tuple(last_token_scores.shape))
-      )
-    except Exception:
-      pass
 
     # ===== Compute advantages using Generalised Advantage Estimation ======
-    self._dbg("advantages: start")
     advantages, returns = ppo_helpers.compute_gae_advantages(
         rewards=rewards,
         values=values,
@@ -557,14 +515,6 @@ class PpoLearnerExp(PpoLearner):
         gamma=self.ppo_config.gamma,
         gae_lambda=self.ppo_config.gae_lambda,
     )
-    self._dbg("advantages: done")
-    try:
-      self._dbg(
-          "advantages: shapes advantages=%s returns=%s"
-          % (tuple(advantages.shape), tuple(returns.shape))
-      )
-    except Exception:
-      pass
 
     # ===== Rollout metrics logging (from filter/meta) =====
     if mt_metrics_dict is not None:
@@ -630,7 +580,6 @@ class PpoLearnerExp(PpoLearner):
           mode=mode,
       )
       # ===== END MODIFICATION =====
-
 
     # Log completion lengths.
     agg_completion_mask = completion_mask.sum(axis=-1)
@@ -779,6 +728,8 @@ class PpoLearnerExp(PpoLearner):
 
     while True:  # loop over M
       try:
+        # Track per-global-step training loop duration
+        self._dbg("train_loop: start")
         initial_steps = self._iter_steps
         for _ in range(full_batch_size // training_mini_batch_sizes):
           # reserve 1 for None and the other for repeated interable
@@ -789,7 +740,6 @@ class PpoLearnerExp(PpoLearner):
           # Use an unbounded queue for evaluation data.
           eval_data_queue = queue_lib.SimpleDataQueue(maxsize=0)
           initial_steps = self._iter_steps
-          self._dbg("rollout: submit prepare_data job")
           future = self.executor.submit(
               self._prepare_data,
               iterator=train_iterator,
@@ -802,18 +752,14 @@ class PpoLearnerExp(PpoLearner):
           )
 
           curr_eval_ds = None
-          self._dbg("trainer: start")
           with jax.profiler.StepTraceAnnotation(
               "trainer", step_num=initial_steps
           ):
             while True:
               with sft_utils.time_measure(suppress_logging=True) as timer:
-                self._dbg("queue_wait: start")
                 curr_train_ds = train_data_queue.get(block=True)
-                self._dbg("queue_wait: done")
 
               if curr_train_ds is None:
-                self._dbg("queue: train micro-batches exhausted")
                 break
 
               if self.can_enable_async_rollout:
@@ -849,43 +795,26 @@ class PpoLearnerExp(PpoLearner):
               #   curr_eval_ds = eval_data_queue.get(block=True)
               #   self._dbg("eval: eval batch ready")
               # ===== End Modification =====
-              self._dbg("update_actor: start")
               self.rl_cluster.update_actor(
                   curr_train_ds,
                   curr_eval_ds,
                   skip_jit,
               )  # loop over μ
-              self._dbg("update_actor: done")
               if hasattr(self.rl_cluster, "critic_trainer"):
-                self._dbg("update_critic: start")
                 self.rl_cluster.update_critic(
                     curr_train_ds,
                     curr_eval_ds,
                     skip_jit,
                 )  # loop over μ
-                self._dbg("update_critic: done")
 
           # call to throw stop iteration as a singal to break the loop
-          self._dbg("prepare_data_join: start")
           future.result()
-          self._dbg("prepare_data_join: done")
           # sync the iter steps with internel trainer, this is based on the
           # assumption that the trainer internally doesn't reset the iter steps.
           # there is current a unit test to ensure this assumption.
           self._iter_steps = self.rl_cluster.actor_trainer.iter_steps
 
-        if self.should_sync_weights:
-          self._dbg("sync_weights: start")
-          with jax.profiler.StepTraceAnnotation(
-              "sync_sampler_weights", step_num=initial_steps
-          ):
-            self.rl_cluster.sync_weights()
-          self._dbg("sync_weights: done")
-        else:
-          self.rl_cluster.global_steps += (
-              1  # manually increment the global steps.
-          )
-        # ====== Modification: Simplified validation trigger using global_steps and grad_acc_steps =====
+        # ====== Modification: Pre-sync validation so TRAIN and EVAL share the same logging step =====
         try:
           eval_every = (
               self.rl_cluster.cluster_config.training_config.eval_every_n_steps
@@ -895,12 +824,22 @@ class PpoLearnerExp(PpoLearner):
         if eval_every and eval_every > 0:
           grad_acc = getattr(self, "grad_acc_steps", 1) or 1
           denom = max(1, eval_every // grad_acc)
-          if self.rl_cluster.global_steps > 0 and (
-              self.rl_cluster.global_steps % denom == 0
-          ):
-            self._dbg("validation: trigger on global_steps boundary")
+          # Evaluate just before we advance global_steps so train/eval log at the same step.
+          if (self.rl_cluster.global_steps + 1) % denom == 0:
             self._validate(None)
         # ======= End Modification =====
+
+        if self.should_sync_weights:
+          with jax.profiler.StepTraceAnnotation(
+              "sync_sampler_weights", step_num=initial_steps
+          ):
+            self.rl_cluster.sync_weights()
+        else:
+          self.rl_cluster.global_steps += (
+              1  # manually increment the global steps.
+          )
+        # End of per-global-step training loop timing
+        self._dbg("train_loop: done")
         if (
             self.rl_cluster.actor_trainer.train_steps
             >= self.rl_cluster.cluster_config.training_config.max_steps
