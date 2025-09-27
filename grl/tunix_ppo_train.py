@@ -74,7 +74,7 @@ def derive_hparams(cfg):
   epsilon_high = float(cfg.trainer.ppo.epsilon_high)
   epsilon_c = float(cfg.trainer.ppo.epsilon_c)
   max_completion_length = int(cfg.trainer.ppo.max_completion_length)
-  
+
   # Mesh (cluster.mesh)
   try:
     mesh_shape = tuple(int(x) for x in cfg.cluster.mesh.shape)
