@@ -90,6 +90,7 @@ trainer:
     epsilon_high: 0.28
     epsilon_c: 3.0
     kl_method: kl
+    max_completion_length: 2048
   optim:
     gradient_accumulation_steps: 8
     actor_lr: 1.0e-6

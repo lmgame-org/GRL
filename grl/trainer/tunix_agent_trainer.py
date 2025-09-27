@@ -44,9 +44,9 @@ def _assert_float32(x, name: str):
 
 @dataclasses.dataclass(slots=True, kw_only=True)
 class PpoConfigExp(PpoConfig):
-  """Placeholder subclass of `PpoConfig` for future overrides."""
+  """Experimental `PpoConfig` with fixed completion length for stable shapes."""
 
-  pass
+  max_completion_length: int | None = None
 
 
 @flax.struct.dataclass(frozen=True)
@@ -118,9 +118,10 @@ class PpoLearnerExp(PpoLearner):
           "PPO requires a critic model. Please pass the correct `critic` to "
           "`RlCluster`."
       )
-    self._use_reward_model = bool(
-        self.rl_cluster.inference_worker._models.get("reward", None)
-    )
+    # self._use_reward_model = bool(
+    #     self.rl_cluster.inference_worker._models.get("reward", None)
+    # )
+    self._use_reward_model = False
 
     # ===== Configure the actor (policy) trainer =====
     # Use customized policy loss that accepts completion_mask
@@ -299,6 +300,22 @@ class PpoLearnerExp(PpoLearner):
     completion_ids = jnp.array(completion_ids_arr)
     # Keep mask as int32 once to avoid repeated casts downstream
     completion_mask = jnp.array(completion_mask_arr)
+
+    # Right-pad/truncate to fixed max_completion_length if configured
+    t_max = getattr(self.ppo_config, "max_completion_length", None)
+    if t_max is not None and t_max > 0:
+      t_cur = completion_ids.shape[1]
+      if t_cur < t_max:
+        pad_w = t_max - t_cur
+        completion_ids = jnp.pad(
+            completion_ids, ((0, 0), (0, pad_w)), constant_values=pad_value
+        )
+        completion_mask = jnp.pad(
+            completion_mask, ((0, 0), (0, pad_w)), constant_values=0
+        )
+      elif t_cur > t_max:
+        completion_ids = completion_ids[:, :t_max]
+        completion_mask = completion_mask[:, :t_max]
     # Derive eos_idx from completion_mask for robustness
     eos_idx = jnp.max(
         common.build_positions_from_mask(completion_mask),

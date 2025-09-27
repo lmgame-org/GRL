@@ -73,7 +73,8 @@ def derive_hparams(cfg):
   epsilon_low = float(cfg.trainer.ppo.epsilon_low)
   epsilon_high = float(cfg.trainer.ppo.epsilon_high)
   epsilon_c = float(cfg.trainer.ppo.epsilon_c)
-
+  max_completion_length = int(cfg.trainer.ppo.max_completion_length)
+  
   # Mesh (cluster.mesh)
   try:
     mesh_shape = tuple(int(x) for x in cfg.cluster.mesh.shape)
@@ -150,6 +151,7 @@ def derive_hparams(cfg):
       "epsilon_low": epsilon_low,
       "epsilon_high": epsilon_high,
       "epsilon_c": epsilon_c,
+      "max_completion_length": max_completion_length,
       "mesh": mesh,
       "max_prompt_length": max_prompt_length,
       "total_generation_steps": total_generation_steps,
@@ -621,6 +623,8 @@ def build_trainer(rl_cluster, cfg, derived, _multi_turn_cfg):
       epsilon_high=float(ppo_cfg.epsilon_high),
       epsilon_c=float(ppo_cfg.epsilon_c),
       kl_method=str(ppo_cfg.kl_method),
+      # Fixed T to stabilize JIT shapes
+      max_completion_length=int(ppo_cfg.max_completion_length),
   )
   trainer = PpoLearnerExp(
       rl_cluster=rl_cluster,
@@ -644,6 +648,18 @@ def _tree_allclose(a, b, rtol=1e-5, atol=1e-6):
     config_path="../configs", config_name="tunix_base", version_base=None
 )
 def main(cfg: DictConfig):
+  # Ensure W&B is initialized for all logging paths (including trainer close hooks)
+  try:
+    if wandb.run is None:
+      wandb.init(
+          project="tunix",
+          config=OmegaConf.to_container(cfg, resolve=True),
+          reinit=False,
+      )
+      print("W&B run URL:", wandb.run.url)
+  except Exception:
+    pass
+
   # Use Hydra cfg directly
   derived = derive_hparams(cfg)
   _print_config_summary(cfg, derived)
