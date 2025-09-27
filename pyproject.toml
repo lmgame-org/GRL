@@ -7,7 +7,7 @@ name = "grl"
 version = "0.1.0"
 description = "Multi-Turn RL Training System with AgentTrainer for Language Model Game Reinforcement Learning"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "lmgame Team"},
@@ -101,6 +101,7 @@ dependencies = [
     "jinja2",
     "networkx",
     "setuptools",
+    "jax-smi",
     
     # WEBSHOP & DATASET DEPENDENCIES (included by default)
     "gdown>=4.6.6",
@@ -119,6 +120,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pre-commit>=3.0.0",
+    "pyink>=23.5.0",
 ]
 docs = [
     "sphinx>=7.0.0",
@@ -149,7 +151,7 @@ exclude = ["tests*", "scripts*", "verl*", "external*"]
 
 [tool.black]
 line-length = 120
-target-version = ['py310']
+target-version = ['py312']
 
 [tool.isort]
 profile = "black"

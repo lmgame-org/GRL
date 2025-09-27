@@ -59,7 +59,7 @@ GRL (Game Reinforcement Learning) is an open‑source framework that post‑trai
    cd GRL
 
    # create a conda environment
-   conda create --name grl python=3.11
+   conda create --name grl python=3.12
    conda activate grl
 
    # Submodule installation
@@ -213,12 +213,17 @@ GRL supports both GPU and TPU training backends:
 
 ## Supported Games and Agents
 
-- **Sokoban**: Puzzle-solving game requiring spatial reasoning
-- **Tetris**: decision‑making and planning
-- **GSM8K**: Mathematical reasoning tasks
-- **BlocksWorld**: Logical planning and manipulation
-- **WebShop**: E‑commerce navigation and decision‑making
-- **BIRD**: SQL query generation and database reasoning
+- **Sokoban**: Puzzle‑solving requiring spatial reasoning (agent: `sokobanAgent`)
+- **Tetris**: Decision‑making and planning (agent: `tetrisAgent`)
+- **GSM8K**: Grade‑school math reasoning (agent: `gsm8kAgent`)
+- **Blocksworld**: Logical planning and manipulation (agent: `blocksworldAgent`)
+- **WebShop**: E‑commerce navigation and decision‑making (agent: `webshopAgent`)
+- **BIRD (SQL)**: SQL query generation and database reasoning (agent: `birdAgent`)
+- **AMC 2023**: Competition math problems from AMC 2023 (agent: `amc23Agent`)
+- **AIME 2024**: Competition math problems from AIME 2024 (agent: `aime24Agent`)
+- **AIME 2025**: Competition math problems from AIME 2025 (agent: `aime25Agent`)
+- **Minerva Math**: Advanced math reasoning dataset (agent: `minervamathAgent`)
+- **Math500**: Math word‑problem benchmark (agent: `math500Agent`)
 
 ## Documentation
 - **[Tutorial](docs/TUTORIAL.md)** - Contributing and development workflow

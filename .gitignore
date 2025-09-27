@@ -148,3 +148,5 @@ qwen_models/
 content/
 
 setup.log
+
+code_style.sh

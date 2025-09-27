@@ -1,189 +1,211 @@
-"""
-Script version of the Jupyter notebook (tunix_ppo_multi_turn_example.ipynb),
-with cells preserved in order. Jupyter magics and shell commands are
-commented out for Python execution.
+"""Tunix PPO training entrypoint.
+
+Clear functional layout:
+  1) Compose config (OmegaConf) and derive hyperparameters
+  2) Initialize models (reference, actor, critic)
+  3) Initialize RLCluster, logging, and trainer
+  4) Orchestrate training in main()
 """
 
 # ======================= Imports =======================
-# Model definitions and parameter loading (Tunix/Qwen2)
-from tunix.models.qwen2 import params
-from tunix.models.qwen2 import model
-import wandb
-
-# JAX/Flax core
-import jax
-import jax.numpy as jnp
-from flax import nnx
-from orbax import checkpoint as ocp
-
-# Optimizer/scheduler
-import optax
-
-# RL cluster and PPO trainer wrappers
-from tunix.rl import rl_cluster as rl_cluster_lib
-from tunix.rl.rollout import base_rollout
-from grl.trainer.tunix_agent_trainer_exp import PpoConfigExp, PpoLearnerExp
-from tunix.rl.utils import create_critic_model
-
-# Config and metrics
-from omegaconf import OmegaConf
-from tunix.sft import metrics_logger
-
-# Hugging Face IO and paths
-from huggingface_hub import snapshot_download
-from etils import epath
-import numpy as np
-from transformers import AutoTokenizer
-
-# Utilities and env
+# Standard library
 import gc
 import os
+import shutil
 import time
 from pathlib import Path
-import shutil
+
+# Third-party
+import wandb
+import jax
+import jax.numpy as jnp
+import optax
+from flax import nnx
+from etils import epath
+from huggingface_hub import snapshot_download
+from omegaconf import DictConfig, OmegaConf
+from orbax import checkpoint as ocp
+from transformers import AutoTokenizer
+from hydra import main as hydra_main
+
+# Local application
+from tunix.models.qwen2 import model, params
+from tunix.rl import rl_cluster as rl_cluster_lib
+from tunix.rl.rollout import base_rollout
+from tunix.sft import metrics_logger
+from grl.trainer.tunix_agent_trainer import PpoConfigExp, PpoLearnerExp
+
 from jax_smi import initialise_tracking
 
 initialise_tracking()
 
-# ======================= Configuration =======================
-
-# Load Tunix base config for hyperparameters (relative paths)
+# ======================= Globals (Config) =======================
 BASE_DIR = Path(__file__).resolve().parents[1]
-tunix_cfg = OmegaConf.load(str(BASE_DIR / "configs" / "tunix_base.yaml"))
 
-# --- Core PPO hyperparameters (centralized) ---
-ENTROPY_COEFF = float(tunix_cfg.ppo.entropy_coeff)
-ENTROPY_AGGS_MODE = str(tunix_cfg.ppo.aggs_mode)
 
-# --- Model artifacts / data ---
-MODEL_CP_PATH = str(BASE_DIR / "qwen_models")
-repo_id = str(tunix_cfg.model.repo_id)
-TRAIN_DATA_DIR = None
-TEST_DATA_DIR = None
-TRAIN_FRACTION = 1.0
+def derive_hparams(cfg):
+  """Derive scalar hyperparameters and convenience values from config."""
+  # Core PPO (trainer.ppo)
+  entropy_coef = float(cfg.trainer.ppo.entropy_coef)
 
-# --- Agent configuration (OmegaConf) ---
-# Use Tunix base YAML only as the single source of truth; compose defaults if present
-def _compose_with_defaults(cfg):
-  out = cfg
+  # Rollout agent sizing
+  filter_ratio = float(cfg.rollout.rollout_filter_ratio)
   try:
-    df = list(cfg.get("defaults", []))
+    group_nums = list(cfg.rollout.agent_group_num)
+    group_sizes = list(cfg.rollout.agent_group_size)
   except Exception:
-    df = []
-  for item in df:
-    if item == "agents":
-      agents_path = BASE_DIR / "configs" / "agents.yaml"
-      try:
-        _agents = OmegaConf.load(str(agents_path))
-        out = OmegaConf.merge(out, _agents)
-      except Exception:
-        pass
-  return out
+    group_nums = [int(cfg.rollout.agent_group_num)]
+    group_sizes = [int(cfg.rollout.agent_group_size)]
+  total_agents = sum(
+      int(gn) * int(gs) for gn, gs in zip(group_nums, group_sizes)
+  )
+  training_batch_size = max(1, int(total_agents * filter_ratio))
 
-multi_turn_cfg = _compose_with_defaults(tunix_cfg)
+  # PPO schedulers
+  num_ppo_epochs = int(cfg.trainer.ppo.num_ppo_epochs)
+  # Mini-batch size is part of cluster.training_config in new config
+  mini_batch_size = int(cfg.cluster.training_config.mini_batch_size)
+  gamma = float(cfg.trainer.ppo.gamma)
+  gae_lambda = float(cfg.trainer.ppo.gae_lambda)
+  beta = float(cfg.trainer.ppo.beta)
+  epsilon = float(cfg.trainer.ppo.epsilon)
+  clip_range_value = float(cfg.trainer.ppo.clip_range_value)
+  epsilon_low = float(cfg.trainer.ppo.epsilon_low)
+  epsilon_high = float(cfg.trainer.ppo.epsilon_high)
+  epsilon_c = float(cfg.trainer.ppo.epsilon_c)
+  max_completion_length = int(cfg.trainer.ppo.max_completion_length)
+  
+  # Mesh (cluster.mesh)
+  try:
+    mesh_shape = tuple(int(x) for x in cfg.cluster.mesh.shape)
+    mesh_axes = tuple(str(x) for x in cfg.cluster.mesh.axes)
+    mesh = [mesh_shape, mesh_axes]
+  except Exception:
+    mesh = [(2, 2), ("fsdp", "tp")]
 
-# --- PPO configuration ---
-# PPO hyperparameters used by Tunix PPO (from YAML)
-filter_ratio = float(multi_turn_cfg.rollout.rollout_filter_ratio)
-# Compute total agents = sum(agent_group_num[i] * agent_group_size[i]) and apply filter_ratio
-try:
-  group_nums = list(multi_turn_cfg.rollout.agent_group_num)
-  group_sizes = list(multi_turn_cfg.rollout.agent_group_size)
-except Exception:
-  group_nums = [int(multi_turn_cfg.rollout.agent_group_num)]
-  group_sizes = [int(multi_turn_cfg.rollout.agent_group_size)]
-total_agents = sum(int(gn) * int(gs) for gn, gs in zip(group_nums, group_sizes))
-TRAINING_BATCH_SIZE = max(1, int(total_agents * float(filter_ratio)))
-NUM_PPO_EPOCHS = int(tunix_cfg.ppo.num_ppo_epochs)
-MINI_BATCH_SIZE = int(tunix_cfg.ppo.mini_batch_size)
-GAMMA = float(tunix_cfg.ppo.gamma)
-GAE_LAMBDA = float(tunix_cfg.ppo.gae_lambda)
-BETA = float(tunix_cfg.ppo.beta)
-EPSILON = float(tunix_cfg.ppo.epsilon)
-VF_COEF = float(tunix_cfg.ppo.vf_coef)
-CLIP_RANGE_VALUE = float(tunix_cfg.ppo.clip_range_value)
+  # Rollout runtime (cluster.rollout_config)
+  train_rc = cfg.cluster.rollout_config.train
+  eval_rc = cfg.cluster.rollout_config.eval
+  max_prompt_length = int(train_rc.max_prompt_length)
+  total_generation_steps = int(train_rc.total_generation_steps)
+  temperature_train = float(train_rc.temperature)
+  temperature_eval = float(eval_rc.temperature)
+  top_p = float(train_rc.top_p)
+  top_k = None if train_rc.top_k is None else int(train_rc.top_k)
 
-# ===== Adjustable PPO clipping hyperparameters (moved to top) =====
-CLIP_RATIO_LOW = float(tunix_cfg.ppo.clip_ratio_low)
-CLIP_RATIO_HIGH = float(tunix_cfg.ppo.clip_ratio_high)
-CLIP_RATIO_C = float(tunix_cfg.ppo.clip_ratio_c)
-kl_penalty_method = str(tunix_cfg.ppo.kl_penalty_method)
+  # Optimizer (trainer.optim)
+  actor_lr = float(cfg.trainer.optim.actor_lr)
+  critic_lr = float(cfg.trainer.optim.critic_lr)
+  b1 = float(cfg.trainer.optim.b1)
+  b2 = float(cfg.trainer.optim.b2)
+  weight_decay = float(cfg.trainer.optim.weight_decay)
+  max_grad_norm = float(cfg.trainer.optim.max_grad_norm)
+  grad_accum = int(cfg.trainer.optim.gradient_accumulation_steps)
+  try:
+    optim_type = str(cfg.trainer.optim.type)
+  except Exception:
+    optim_type = "constant"
 
-# --- Cluster / trainer / rollout configuration ---
-# Sharding (fsdp, tp) — read from YAML, fallback to default
-try:
-  _mesh_shape = tuple(int(x) for x in tunix_cfg.mesh.shape)
-  _mesh_axes = tuple(str(x) for x in tunix_cfg.mesh.axes)
-  MESH = [_mesh_shape, _mesh_axes]
-except Exception:
-  MESH = [(2, 2), ("fsdp", "tp")]
-# Use integer accumulation; at least 1
-# GRADIENT_ACCUMULATION_STEPS = max(1, (TRAINING_BATCH_SIZE + MINI_BATCH_SIZE - 1) // MINI_BATCH_SIZE)
-GRADIENT_ACCUMULATION_STEPS = int(tunix_cfg.training.gradient_accumulation_steps)
+  # Training loop setup (cluster.training_config)
+  num_batches = int(200 * training_batch_size / max(1, mini_batch_size))
+  ee = int(cfg.cluster.training_config.eval_every_n_steps)
+  eval_every_n_steps = ee if ee and ee > 0 else int(10 * grad_accum)
+  num_epochs = 1
+  max_steps_cfg = int(cfg.cluster.training_config.max_steps)
+  train_fraction = 1.0
+  max_steps = (
+      max_steps_cfg
+      if max_steps_cfg and max_steps_cfg > 0
+      else int(num_batches * train_fraction * num_epochs)
+  )
+  cpu_offload = bool(cfg.cluster.offload_to_cpu)
+  rollout_engine = str(cfg.cluster.rollout_engine)
 
-# Rollout (GRPO generation) parameters (aligned with YAML)
-# Max Prompt Length: 4096
-# Max Generation Steps: 400
-MAX_PROMPT_LENGTH = int(tunix_cfg.rollout_runtime.max_prompt_length)
-TOTAL_GENERATION_STEPS = int(tunix_cfg.rollout_runtime.total_generation_steps)
-TEMPERATURE = float(tunix_cfg.rollout_runtime.temperature_train)
-EVAL_TEMPERATURE = float(tunix_cfg.rollout_runtime.temperature_eval)
-TOP_P = float(tunix_cfg.rollout_runtime.top_p)
-TOP_K = None if tunix_cfg.rollout_runtime.top_k is None else int(tunix_cfg.rollout_runtime.top_k)
+  # Paths
+  run_root = (BASE_DIR / "content").resolve()
+  default_intermediate = (run_root / "intermediate_ckpt").resolve()
+  default_ckpts = (run_root / "ckpts").resolve()
+  intermediate_ckpt_dir = os.environ.get(
+      "GRL_INTERMEDIATE_CKPT_DIR", str(default_intermediate)
+  )
+  ckpt_dir = os.environ.get("GRL_CKPT_DIR", str(default_ckpts))
+  save_interval_steps = int(
+      cfg.cluster.training_config.checkpoint.save_interval_steps
+  )
+  max_to_keep = int(cfg.cluster.training_config.checkpoint.max_to_keep)
 
-  # Training loop setup
-NUM_BATCHES = int(200 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
-# Use YAML value if > 0, else fallback
-_ee = int(tunix_cfg.training.eval_every_n_steps)
-EVAL_EVERY_N_STEPS = _ee if _ee and _ee > 0 else int(10 * TRAINING_BATCH_SIZE / MINI_BATCH_SIZE)
-# Debug validation use small batch size
-# NUM_BATCHES = 20
-# EVAL_EVERY_N_STEPS = 10
-NUM_EPOCHS = 1
-_max_steps_cfg = int(tunix_cfg.training.max_steps)
-MAX_STEPS = _max_steps_cfg if _max_steps_cfg and _max_steps_cfg > 0 else int(NUM_BATCHES * TRAIN_FRACTION * NUM_EPOCHS)
-CPU_OFFLOAD = False
+  return {
+      "entropy_coef": entropy_coef,
+      "filter_ratio": filter_ratio,
+      "group_nums": group_nums,
+      "group_sizes": group_sizes,
+      "total_agents": total_agents,
+      "training_batch_size": training_batch_size,
+      "num_ppo_epochs": num_ppo_epochs,
+      "mini_batch_size": mini_batch_size,
+      "gamma": gamma,
+      "gae_lambda": gae_lambda,
+      "beta": beta,
+      "epsilon": epsilon,
+      "clip_range_value": clip_range_value,
+      "epsilon_low": epsilon_low,
+      "epsilon_high": epsilon_high,
+      "epsilon_c": epsilon_c,
+      "max_completion_length": max_completion_length,
+      "mesh": mesh,
+      "max_prompt_length": max_prompt_length,
+      "total_generation_steps": total_generation_steps,
+      "temperature_train": temperature_train,
+      "temperature_eval": temperature_eval,
+      "top_p": top_p,
+      "top_k": top_k,
+      "num_batches": num_batches,
+      "eval_every_n_steps": eval_every_n_steps,
+      "num_epochs": num_epochs,
+      "max_steps": max_steps,
+      "cpu_offload": cpu_offload,
+      "rollout_engine": rollout_engine,
+      "actor_lr": actor_lr,
+      "critic_lr": critic_lr,
+      "b1": b1,
+      "b2": b2,
+      "weight_decay": weight_decay,
+      "max_grad_norm": max_grad_norm,
+      "grad_accum": grad_accum,
+      "optim_type": optim_type,
+      "run_root": str(run_root),
+      "intermediate_ckpt_dir": intermediate_ckpt_dir,
+      "ckpt_dir": ckpt_dir,
+      "save_interval_steps": save_interval_steps,
+      "max_to_keep": max_to_keep,
+  }
 
-# Optimizer/scheduler
-ACTOR_LR = float(tunix_cfg.training.actor_lr)
-CRITIC_LR = float(tunix_cfg.training.critic_lr)
-B1 = float(tunix_cfg.training.b1)
-B2 = float(tunix_cfg.training.b2)
-WEIGHT_DECAY = float(tunix_cfg.training.weight_decay)
-MAX_GRAD_NORM = float(tunix_cfg.training.max_grad_norm)
-
-# Checkpointing (compose absolute paths from repo root; allow env overrides)
-RUN_ROOT = (BASE_DIR / "content").resolve()
-_default_intermediate = (RUN_ROOT / "intermediate_ckpt").resolve()
-_default_ckpts = (RUN_ROOT / "ckpts").resolve()
-INTERMEDIATE_CKPT_DIR = os.environ.get("GRL_INTERMEDIATE_CKPT_DIR", str(_default_intermediate))
-CKPT_DIR = os.environ.get("GRL_CKPT_DIR", str(_default_ckpts))
-SAVE_INTERVAL_STEPS = int(tunix_cfg.training.save_interval_steps)
-MAX_TO_KEEP = int(tunix_cfg.training.max_to_keep)
-print("Checkpoint dirs:", {"intermediate": INTERMEDIATE_CKPT_DIR, "ckpts": CKPT_DIR})
 
 # Inference presets removed for brevity
 
 
-# ======================= Prepare dummy reward and datasets =======================
+# ======================= Dataset helpers =======================
 
 
-# ----- Get dataset -----
-def get_dataset(_: str | None, split: str = "train"):
+def get_dataset(num_batches: int, batch_size: int, split: str = "train"):
   # For multi-turn rollouts, return a lightweight empty iterator of fixed length
-  del _
   del split
+
   class _Empty:
+
     def __iter__(self):
-      for _ in range(NUM_BATCHES):
-        yield {}
+      for _ in range(num_batches):
+        # Minimal placeholder to satisfy trainer interfaces; actual data comes from rollout
+        yield {"prompts": [""] * batch_size}
+
     def __getitem__(self, idx):
-      return {}
+      return {"prompts": [""] * batch_size}
+
     def __len__(self):
-      return NUM_BATCHES
+      return num_batches
+
   return _Empty()
 
-dataset = get_dataset(TRAIN_DATA_DIR, "train")
 
 # ----- Get dummy reward function -----
 def _dummy_reward_fn(prompts, completions, **kwargs):
@@ -191,93 +213,73 @@ def _dummy_reward_fn(prompts, completions, **kwargs):
   batch_size = len(completions) if completions is not None else len(prompts)
   return [0.0] * batch_size
 
+
 # ======================= Print Config Summary =======================
-def _print_config_summary():
+def _print_config_summary(cfg, derived):
   try:
-    merged = OmegaConf.to_container(multi_turn_cfg, resolve=True)
+    merged = OmegaConf.to_container(cfg, resolve=True)
   except Exception:
-    merged = multi_turn_cfg
-  print("===== Multi-turn Config (merged tunix_base.yaml + defaults) =====")
+    merged = cfg
+  print("===== Hydra Config (resolved) =====")
   print(merged)
-  # Additional concise debug summary for quick inspection
-  try:
-    yaml_cfg = OmegaConf.to_container(tunix_cfg, resolve=True)
-  except Exception:
-    yaml_cfg = tunix_cfg
-  print("===== YAML (tunix_base.yaml) =====")
-  print({
-      'ppo': {
-        'num_ppo_epochs': NUM_PPO_EPOCHS,
-        'mini_batch_size': MINI_BATCH_SIZE,
-        'gamma': GAMMA,
-        'gae_lambda': GAE_LAMBDA,
-        'beta': BETA,
-        'epsilon': EPSILON,
-        'vf_coef': VF_COEF,
-        'clip_range_value': CLIP_RANGE_VALUE,
-        'entropy_coeff': ENTROPY_COEFF,
-        'aggs_mode': ENTROPY_AGGS_MODE,
-        'clip_ratio_low': CLIP_RATIO_LOW,
-        'clip_ratio_high': CLIP_RATIO_HIGH,
-        'clip_ratio_c': CLIP_RATIO_C,
-        'kl_penalty_method': kl_penalty_method,
-      },
-      'training': {
-        'gradient_accumulation_steps': GRADIENT_ACCUMULATION_STEPS,
-        'max_steps': MAX_STEPS,
-        'eval_every_n_steps': EVAL_EVERY_N_STEPS,
-        'actor_lr': ACTOR_LR,
-        'critic_lr': CRITIC_LR,
-        'b1': B1,
-        'b2': B2,
-        'weight_decay': WEIGHT_DECAY,
-        'max_grad_norm': MAX_GRAD_NORM,
-        'save_interval_steps': SAVE_INTERVAL_STEPS,
-        'max_to_keep': MAX_TO_KEEP,
-      },
-      'rollout_runtime': {
-        'max_prompt_length': MAX_PROMPT_LENGTH,
-        'total_generation_steps': TOTAL_GENERATION_STEPS,
-        'temperature_train': TEMPERATURE,
-        'temperature_eval': EVAL_TEMPERATURE,
-        'top_p': TOP_P,
-        'top_k': TOP_K,
-      },
-      'rollout': {
-        'agent_group_num': group_nums,
-        'agent_group_size': group_sizes,
-        'validation_agent_group_num': list(multi_turn_cfg.rollout.validation_agent_group_num) if hasattr(multi_turn_cfg.rollout, 'validation_agent_group_num') else None,
-        'validation_agent_group_size': list(multi_turn_cfg.rollout.validation_agent_group_size) if hasattr(multi_turn_cfg.rollout, 'validation_agent_group_size') else None,
-        'use_turn_scores': bool(multi_turn_cfg.rollout.use_turn_scores),
-        'rollout_filter_ratio': filter_ratio,
-        'rollout_filter_type': str(multi_turn_cfg.rollout.rollout_filter_type),
-        'reward_normalization': {
-          'grouping': str(multi_turn_cfg.rollout.reward_normalization.grouping),
-          'method': str(multi_turn_cfg.rollout.reward_normalization.method),
-        },
-      },
-      'derived': {
-        'total_agents': total_agents,
-        'training_batch_size': TRAINING_BATCH_SIZE,
-        'num_batches': NUM_BATCHES,
-      },
-      'mesh': {
-        'shape': MESH[0],
-        'axes': MESH[1],
-      },
-      'model': { 'repo_id': repo_id },
-      'paths': {
-        'ckpt_dir': CKPT_DIR,
-        'intermediate_ckpt_dir': INTERMEDIATE_CKPT_DIR,
+  print("===== Derived PPO/Training/Cluster/Rollout =====")
+  print(
+      {
+          "trainer.ppo": {
+              "num_ppo_epochs": derived["num_ppo_epochs"],
+              "gamma": derived["gamma"],
+              "gae_lambda": derived["gae_lambda"],
+              "beta": derived["beta"],
+              "epsilon": derived["epsilon"],
+              "clip_range_value": derived["clip_range_value"],
+              "entropy_coef": derived["entropy_coef"],
+              "epsilon_low": derived["epsilon_low"],
+              "epsilon_high": derived["epsilon_high"],
+              "epsilon_c": derived["epsilon_c"],
+          },
+          "trainer.optim": {
+              "gradient_accumulation_steps": derived["grad_accum"],
+              "actor_lr": derived["actor_lr"],
+              "critic_lr": derived["critic_lr"],
+              "b1": derived["b1"],
+              "b2": derived["b2"],
+              "weight_decay": derived["weight_decay"],
+              "max_grad_norm": derived["max_grad_norm"],
+          },
+          "cluster.training_config": {
+              "max_steps": derived["max_steps"],
+              "eval_every_n_steps": derived["eval_every_n_steps"],
+              "save_interval_steps": derived["save_interval_steps"],
+              "max_to_keep": derived["max_to_keep"],
+              "rollout_engine": derived["rollout_engine"],
+              "offload_to_cpu": derived["cpu_offload"],
+          },
+          "cluster.rollout_config": {
+              "train": {
+                  "max_prompt_length": derived["max_prompt_length"],
+                  "total_generation_steps": derived["total_generation_steps"],
+                  "temperature": derived["temperature_train"],
+                  "top_p": derived["top_p"],
+                  "top_k": derived["top_k"],
+              },
+              "eval": {
+                  "max_prompt_length": derived["max_prompt_length"],
+                  "total_generation_steps": derived["total_generation_steps"],
+                  "temperature": derived["temperature_eval"],
+                  "top_p": 1.0,
+                  "top_k": None,
+              },
+          },
+          "derived": {
+              "total_agents": derived["total_agents"],
+              "training_batch_size": derived["training_batch_size"],
+              "num_batches": derived["num_batches"],
+          },
       }
-  })
-
-_print_config_summary()
+  )
 
 
-
-# ======================= Prepare Policy Models & Critic Models =======================
-
+# ======================= Model building helpers =======================
 def download_model_weights(repo_id: str, local_dir: str) -> str:
   """Download model weights and tokenizer assets; return the resolved path."""
   downloaded = snapshot_download(
@@ -316,7 +318,7 @@ def save_intermediate_state(module: nnx.Module, save_dir: str) -> None:
 
 def build_reference_model_from_ckpt(ckpt_path: str, mesh):
   """Restore reference model and return (model, mesh, model_config)."""
-  model_config = model.ModelConfig.qwen2_5_0_5_b()
+  model_config = model.ModelConfig.qwen2_5_0_5b()
   with mesh:
     abs_qwen2: nnx.Module = nnx.eval_shape(
         lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
@@ -341,47 +343,46 @@ def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
   Ensures the returned module is a distinct Python object so optimizer updates on
   the actor do not affect the frozen reference.
   """
-  abs_mod: nnx.Module = nnx.eval_shape(lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0)))
+  with mesh:
+    abs_mod: nnx.Module = nnx.eval_shape(
+        lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+    )
   gdef, _ = nnx.split(abs_mod)
   src_state = nnx.state(src_module)
   # Best-effort: ensure arrays are placed on the provided mesh sharding
   try:
     target_sharding = nnx.get_named_sharding(src_state, mesh)
-    src_state = jax.tree.map(lambda x, s: jax.device_put(x, s), src_state, target_sharding)
+    src_state = jax.tree.map(
+        lambda x, s: jax.device_put(x, s), src_state, target_sharding
+    )
   except Exception:
     pass
-  return nnx.merge(gdef, src_state)
+  return nnx.merge(gdef, src_state, copy=True)
 
 
-# 1) Download weights and load base model, then save an intermediate state
-model_config = model.ModelConfig.qwen2_5_0_5_b()
-model_dir = download_model_weights(repo_id, MODEL_CP_PATH)
-qwen2 = load_qwen2_from_safetensors(model_dir, model_config)
-save_intermediate_state(qwen2, INTERMEDIATE_CKPT_DIR)
-del qwen2
-gc.collect()
+def build_models_and_tokenizer(cfg, derived):
+  """Download/load models, build reference/actor/critic, tokenizer and mesh."""
+  model_cp_path = str(BASE_DIR / "qwen_models")
+  repo_id = str(cfg.model.repo_id)
+  model_dir = download_model_weights(repo_id, model_cp_path)
+  mesh = jax.make_mesh(*derived["mesh"])  # [shape, axes]
+  model_config = model.ModelConfig.qwen2_5_0_5b()
+  with mesh:
+    qwen2 = load_qwen2_from_safetensors(model_dir, model_config)
+  save_intermediate_state(qwen2, derived["intermediate_ckpt_dir"])
+  del qwen2
+  gc.collect()
 
-# 2) Build reference/policy and critic models
-shape, axes = MESH
-devices = jax.devices("tpu")
-if len(devices) == 0:
-  raise ValueError(
-      "No TPU devices visible. Set JAX to TPU backend and ensure 4 devices."
+  qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
+      os.path.join(Path(derived["intermediate_ckpt_dir"]), "state"), mesh
   )
-if len(devices) < int(np.prod(shape)):
-  raise ValueError(
-      f"Insufficient TPU devices for mesh {shape}. Required: {int(np.prod(shape))}, found: {len(devices)}."
-  )
-mesh = jax.sharding.Mesh(np.array(devices).reshape(shape), axes)
-qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
-    os.path.join(Path(INTERMEDIATE_CKPT_DIR), "state"), mesh
-)
-policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
-tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-if tokenizer.pad_token_id is None:
-  tokenizer.pad_token = tokenizer.eos_token
-# TODO: Maybe padding issue in trainer
-print("eos_id:", tokenizer.eos_token_id, "pad_id:", tokenizer.pad_token_id)
+  policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
+  tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+  if tokenizer.pad_token_id is None:
+    tokenizer.pad_token = tokenizer.eos_token
+  print("eos_id:", tokenizer.eos_token_id, "pad_id:", tokenizer.pad_token_id)
+  critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
+  return policy_qwen2, critic_qwen2, qwen2_ref, tokenizer, mesh, model_config
 
 
 """
@@ -392,145 +393,19 @@ At this point, we have:
 """
 
 
-# """
-# # ===== Helpers: NNX head materialization & replacement =====
-# """
-#
-# def _dict_paths(d, prefix=()):
-#   """Yield (path_tuple, leaf) for nested dict-likes in an NNX state."""
-#   if isinstance(d, dict):
-#     for k, v in d.items():
-#       yield from _dict_paths(v, prefix + (k,))
-#   else:
-#     yield prefix, d
-#
-# def _find_embedding_path(nn_state):
-#   """
-#   Heuristic: find embedding weight (shape ~ [vocab, hidden]) under keys containing
-#   'embed' and 'embedding' (e.g., state['backbone']['embed_tokens']['embedding']).
-#   Returns a tuple path or None.
-#   """
-#   candidates = []
-#   for path, leaf in _dict_paths(nn_state):
-#     if not hasattr(leaf, "shape"):
-#       continue
-#     key_str = "/".join(map(str, path)).lower()
-#     if "embed" in key_str and "embedding" in key_str and len(getattr(leaf, "shape", ())) == 2:
-#       candidates.append((path, leaf.shape))
-#   # prefer the largest vocab dimension
-#   if not candidates:
-#     return None
-#   candidates.sort(key=lambda x: x[1][0], reverse=True)
-#   return candidates[0][0]
-#
-# class Qwen2WithHead(nnx.Module):
-#   """
-#   Minimal wrapper that (1) exposes a real output head and (2) forwards through backbone
-#   with output_hidden_states=True so we can attach heads to the last hidden layer.
-#   """
-#   def __init__(self, backbone: nnx.Module, hidden_dim: int, out_dim: int, rngs: nnx.Rngs):
-#     self.backbone = backbone
-#     self.output_proj = nnx.Linear(in_features=hidden_dim, out_features=out_dim, use_bias=False, rngs=rngs)
-#
-#   def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
-#     _ = self.backbone(
-#       input_tokens,
-#       positions=positions,
-#       cache=cache,
-#       attention_mask=attention_mask,
-#       output_hidden_states=True,
-#       **kwargs,
-#     )
-#     h_all = nnx.pop(self.backbone, nnx.Intermediate)['all_hidden_states'].value
-#     if isinstance(h_all, (list, tuple)):
-#       h = h_all[-1]
-#     else:
-#       h = h_all
-#     return self.output_proj(h)
-#
-# def _materialize_head_from_tied_embedding(backbone_module: nnx.Module, mesh, hidden_dim: int, vocab_size: int):
-#   """
-#   Create Qwen2WithHead(backbone, H→V), initialize kernel with embed^T (de-tie),
-#   and shard to mesh.
-#   """
-#   # Build wrapper
-#   wrapper = Qwen2WithHead(backbone_module, hidden_dim, vocab_size, rngs=nnx.Rngs(params=0))
-#   gdef, state = nnx.split(wrapper)
-#
-#   # Locate embedding in the backbone state
-#   embed_path = _find_embedding_path(state)
-#   if embed_path is None:
-#     print("[critic] WARNING: embedding not found; initializing output head to zeros.")
-#     kernel = jnp.zeros((hidden_dim, vocab_size), dtype=state['output_proj']['kernel'].dtype)
-#   else:
-#     embed = state
-#     for key in embed_path:
-#       embed = embed[key]
-#     # embed is [V, H] -> kernel needs [H, V]
-#     kernel = jnp.asarray(embed.T, dtype=state['output_proj']['kernel'].dtype)
-#
-#   state['output_proj']['kernel'] = kernel
-#
-#   # shard and merge
-#   sharding = nnx.get_named_sharding(state, mesh)
-#   state = jax.tree.map(lambda x, s: jax.device_put(x, s), state, sharding)
-#   return nnx.merge(gdef, state)
-#
-# def _replace_output_head_with_value(critic_with_head: Qwen2WithHead, mesh, hidden_dim: int):
-#   """
-#   True replacement: keep the attribute name `output_proj`, but swap the module shape/type
-#   to Linear(H→1). This mirrors Torch's `model.lm_head = nn.Linear(H,1)`.
-#   """
-#   # Split current module
-#   gdef, st = nnx.split(critic_with_head)
-#
-#   # Replace module attribute at Python level
-#   critic_with_head.output_proj = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=nnx.Rngs(params=0))
-#
-#   # Split again to get the new state tree (with shape [H,1])
-#   gdef2, st2 = nnx.split(critic_with_head)
-#
-#   # Optional: initialize small (or zeros) for stability
-#   st2['output_proj']['kernel'] = jnp.zeros_like(st2['output_proj']['kernel'])
-#
-#   # Shard and merge
-#   shard2 = nnx.get_named_sharding(st2, mesh)
-#   st2 = jax.tree.map(lambda x, s: jax.device_put(x, s), st2, shard2)
-#   return nnx.merge(gdef2, st2)
-#
-# def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
-#   """
-#   Build a critic that replaces the output head (no append):
-#     1) Clone backbone weights from _ref_model into a fresh module.
-#     2) Materialize an untied output head (H→V) and init from tied embedding (embed^T).
-#     3) Replace that head with a value head (H→1).
-#     4) Return the merged/sharded critic module.
-#   """
-#   # 1) Clone the backbone to avoid parameter sharing with policy/ref
-#   abs_mod: nnx.Module = nnx.eval_shape(lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0)))
-#   gdef_abs, _ = nnx.split(abs_mod)
-#   ref_state = nnx.state(_ref_model)
-#   backbone = nnx.merge(gdef_abs, ref_state)
-#
-#   # 2) Materialize an explicit softmax head initialized from embedding^T
-#   hidden_dim = getattr(backbone.config, "embed_dim")
-#   vocab_size = getattr(backbone.config, "vocab_size")
-#   critic_with_head = _materialize_head_from_tied_embedding(backbone, _mesh, hidden_dim, vocab_size)
-#
-#   # 3) True replacement: swap H→V head with a value head H→1
-#   critic_value = _replace_output_head_with_value(critic_with_head, _mesh, hidden_dim)
-#
-#   print("[critic] Built with true head replacement: output_proj Linear(H→1).")
-#   return critic_value
-#
-# critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
-
 # --- Critic: simple Linear(H->1) head (no bias) ---
 class Qwen2CriticTokenClass(nnx.Module):
+
   def __init__(self, backbone: nnx.Module, rngs: nnx.Rngs):
     self.backbone = backbone
-    hidden_dim = getattr(self.backbone.config, "hidden_size", getattr(self.backbone.config, "embed_dim"))
-    self.classifier = nnx.Linear(in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs)
+    hidden_dim = getattr(
+        self.backbone.config,
+        "hidden_size",
+        getattr(self.backbone.config, "embed_dim"),
+    )
+    self.classifier = nnx.Linear(
+        in_features=hidden_dim, out_features=1, use_bias=False, rngs=rngs
+    )
 
   def __call__(self, input_tokens, positions, cache, attention_mask, **kwargs):
     _ = self.backbone(
@@ -546,14 +421,18 @@ class Qwen2CriticTokenClass(nnx.Module):
       h = h[-1]
     return self.classifier(h)
 
-def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module:
+
+def get_critic_model(
+    _model_config, _ref_model: nnx.Module, _mesh
+) -> nnx.Module:
   """Builds a critic from ref backbone and shards it to the provided mesh."""
-  abs_mod: nnx.Module = nnx.eval_shape(
-      lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
-  )
+  with _mesh:
+    abs_mod: nnx.Module = nnx.eval_shape(
+        lambda: model.Qwen2(_model_config, rngs=nnx.Rngs(params=0))
+    )
   graph_def, _ = nnx.split(abs_mod)
   ref_state = nnx.state(_ref_model)
-  backbone = nnx.merge(graph_def, ref_state)
+  backbone = nnx.merge(graph_def, ref_state, copy=True)
 
   critic = Qwen2CriticTokenClass(backbone, rngs=nnx.Rngs(params=0))
   crit_graph_def, crit_state = nnx.split(critic)
@@ -563,172 +442,265 @@ def get_critic_model(_model_config, _ref_model: nnx.Module, _mesh) -> nnx.Module
   key = jax.random.PRNGKey(seed)
   kshape = crit_state["classifier"]["kernel"].shape
   kdtype = crit_state["classifier"]["kernel"].dtype
-  crit_state["classifier"]["kernel"] = jax.random.normal(key, kshape, dtype=kdtype) * 0.02
+  crit_state["classifier"]["kernel"] = (
+      jax.random.normal(key, kshape, dtype=kdtype) * 0.02
+  )
 
   # Shard once at the end
   crit_sharding = nnx.get_named_sharding(crit_state, _mesh)
-  crit_state = jax.tree.map(lambda x, s: jax.device_put(x, s), crit_state, crit_sharding)
+  crit_state = jax.tree.map(
+      lambda x, s: jax.device_put(x, s), crit_state, crit_sharding
+  )
   return nnx.merge(crit_graph_def, crit_state)
 
-critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
 
-
-# ============================== initialize optimizer, rl_cluster, ppo_trainer =======================
-qwen_tokenizer = tokenizer
-
-
-# Ckpt saving
-checkpointing_options = ocp.CheckpointManagerOptions(
-    save_interval_steps=SAVE_INTERVAL_STEPS, max_to_keep=MAX_TO_KEEP
-)
-
-# Metrics logger
-# Ensure a single TensorBoard log directory is cleaned per run
-TB_LOG_DIR = "/home/vanitas/lmgame_projects/GRL/content/tmp/tensorboard/ppo"
-# Close any stray W&B run from previous initializations in-process
-try:
-  wandb.finish()
-except Exception:
-  pass
-
-# Reset checkpoint and tensorboard directories to avoid auto-restore/mixing logs
-def _reset_dir(path: str):
+def reset_dir(path: str):
   if os.path.exists(path):
     shutil.rmtree(path, ignore_errors=True)
   os.makedirs(path, exist_ok=True)
 
-_reset_dir(CKPT_DIR)
-_reset_dir(TB_LOG_DIR)
-metrics_logging_options = metrics_logger.MetricsLoggerOptions(
-    log_dir=TB_LOG_DIR, flush_every_n_steps=20
-)
 
-# Compute effective optimizer steps based on rollout size, filtering and mini-batching
-# (Commented out to align strictly with YAML; use MAX_STEPS and no warmup)
-# try:
-#   total_agents = sum(int(gn) * int(gs) for gn, gs in zip(
-#       multi_turn_cfg.rollout.agent_group_num,
-#       multi_turn_cfg.rollout.agent_group_size,
-#   ))
-#   kept_agents = max(1, int(total_agents * float(multi_turn_cfg.rollout.rollout_filter_ratio)))
-# except Exception:
-#   # Fallback to a reasonable default if config is missing
-#   kept_agents = 32
-# EFFECTIVE_STEPS = int(NUM_BATCHES * (kept_agents / max(1, MINI_BATCH_SIZE)) * NUM_PPO_EPOCHS)
-# WARMUP_STEPS = 0
-# Scheduler config removed (unused)
+def build_optimizers(derived):
+  if str(derived.get("optim_type", "constant")).lower() == "constant":
+    actor_lr_schedule = optax.constant_schedule(derived["actor_lr"])
+    critic_lr_schedule = optax.constant_schedule(derived["critic_lr"])
+  else:
+    # Fallback: use fixed float if an unknown type is provided
+    actor_lr_schedule = derived["actor_lr"]
+    critic_lr_schedule = derived["critic_lr"]
 
-# Optimizers, learning rate schedulers, gradient clipping (split actor/critic)
-actor_optimizer = optax.adamw(
-    learning_rate=optax.constant_schedule(ACTOR_LR),
-    b1=B1,
-    b2=B2,
-    weight_decay=WEIGHT_DECAY,
-)
-critic_optimizer = optax.adamw(
-    learning_rate=optax.constant_schedule(CRITIC_LR),
-    b1=B1,
-    b2=B2,
-    weight_decay=WEIGHT_DECAY,
-)
-if MAX_GRAD_NORM is not None:
-  actor_optimizer = optax.chain(
-      optax.clip_by_global_norm(max_norm=MAX_GRAD_NORM),
-      actor_optimizer,
+  actor_opt = optax.adamw(
+      learning_rate=actor_lr_schedule,
+      b1=derived["b1"],
+      b2=derived["b2"],
+      weight_decay=derived["weight_decay"],
   )
-  critic_optimizer = optax.chain(
-      optax.clip_by_global_norm(max_norm=MAX_GRAD_NORM),
-      critic_optimizer,
+  critic_opt = optax.adamw(
+      learning_rate=critic_lr_schedule,
+      b1=derived["b1"],
+      b2=derived["b2"],
+      weight_decay=derived["weight_decay"],
+  )
+  if derived["max_grad_norm"] is not None:
+    actor_opt = optax.chain(
+        optax.clip_by_global_norm(max_norm=derived["max_grad_norm"]), actor_opt
+    )
+    critic_opt = optax.chain(
+        optax.clip_by_global_norm(max_norm=derived["max_grad_norm"]), critic_opt
+    )
+  return actor_opt, critic_opt
+
+
+def build_cluster_config(mesh, tokenizer, derived, cfg):
+  checkpointing_options = ocp.CheckpointManagerOptions(
+      save_interval_steps=derived["save_interval_steps"],
+      max_to_keep=derived["max_to_keep"],
+  )
+  tb_log_dir = str(BASE_DIR / "content" / "tmp" / "tensorboard" / "ppo")
+  reset_dir(derived["ckpt_dir"])
+  reset_dir(tb_log_dir)
+  metrics_opts = metrics_logger.MetricsLoggerOptions(
+      log_dir=tb_log_dir, flush_every_n_steps=20
+  )
+
+  actor_opt, critic_opt = build_optimizers(derived)
+
+  # Build role_to_mesh from cfg.cluster.role_to_mesh
+  def _mesh_from_spec(spec):
+    if spec is None or spec == "same":
+      return mesh
+    try:
+      shape = tuple(int(x) for x in spec["shape"])  # type: ignore[index]
+      axes = tuple(str(x) for x in spec["axes"])  # type: ignore[index]
+      return jax.make_mesh(shape, axes)
+    except Exception:
+      return mesh
+
+  r2m_cfg = getattr(cfg.cluster, "role_to_mesh", "same")
+  if isinstance(r2m_cfg, (str, type(None))) and (
+      r2m_cfg is None or r2m_cfg == "same"
+  ):
+    role_to_mesh = {
+        rl_cluster_lib.Role.ACTOR: mesh,
+        rl_cluster_lib.Role.CRITIC: mesh,
+        rl_cluster_lib.Role.REFERENCE: mesh,
+        rl_cluster_lib.Role.ROLLOUT: mesh,
+    }
+  else:
+    # Expect mapping per role
+    role_to_mesh = {
+        rl_cluster_lib.Role.ACTOR: _mesh_from_spec(r2m_cfg.get("actor")),
+        rl_cluster_lib.Role.CRITIC: _mesh_from_spec(r2m_cfg.get("critic")),
+        rl_cluster_lib.Role.REFERENCE: _mesh_from_spec(
+            r2m_cfg.get("reference")
+        ),
+        rl_cluster_lib.Role.ROLLOUT: _mesh_from_spec(r2m_cfg.get("rollout")),
+    }
+
+  cluster_config = rl_cluster_lib.ClusterConfig(
+      role_to_mesh=role_to_mesh,
+      rollout_engine=derived["rollout_engine"],
+      offload_to_cpu=derived["cpu_offload"],
+      training_config=rl_cluster_lib.RLTrainingConfig(
+          actor_optimizer=actor_opt,
+          critic_optimizer=critic_opt,
+          mini_batch_size=(
+              int(cfg.cluster.training_config.mini_batch_size)
+              if getattr(cfg.cluster.training_config, "mini_batch_size", None)
+              is not None
+              else None
+          ),
+          training_micro_batch_size=(
+              int(cfg.cluster.training_config.training_micro_batch_size)
+              if getattr(
+                  cfg.cluster.training_config, "training_micro_batch_size", None
+              )
+              is not None
+              else None
+          ),
+          rollout_micro_batch_size=(
+              int(cfg.cluster.training_config.rollout_micro_batch_size)
+              if getattr(
+                  cfg.cluster.training_config, "rollout_micro_batch_size", None
+              )
+              is not None
+              else int(cfg.cluster.training_config.mini_batch_size)
+          ),
+          compute_logps_micro_batch_size=(
+              int(cfg.cluster.training_config.compute_logps_micro_batch_size)
+              if getattr(
+                  cfg.cluster.training_config,
+                  "compute_logps_micro_batch_size",
+                  None,
+              )
+              is not None
+              else int(cfg.cluster.training_config.mini_batch_size)
+          ),
+          eval_every_n_steps=derived["eval_every_n_steps"],
+          max_steps=derived["max_steps"],
+          gradient_accumulation_steps=derived["grad_accum"],
+          metrics_logging_options=metrics_opts,
+          checkpoint_root_directory=derived["ckpt_dir"],
+          checkpointing_options=checkpointing_options,
+      ),
+      rollout_config={
+          rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
+              max_tokens_to_generate=derived["total_generation_steps"],
+              max_prompt_length=derived["max_prompt_length"],
+              kv_cache_size=derived["max_prompt_length"]
+              + derived["total_generation_steps"]
+              + 256,
+              temperature=derived["temperature_train"],
+              top_p=derived["top_p"],
+              top_k=derived["top_k"],
+          ),
+          rl_cluster_lib.Mode.EVAL: base_rollout.RolloutConfig(
+              max_tokens_to_generate=derived["total_generation_steps"],
+              max_prompt_length=derived["max_prompt_length"],
+              kv_cache_size=derived["max_prompt_length"]
+              + derived["total_generation_steps"]
+              + 256,
+              temperature=derived["temperature_eval"],
+              top_p=1.0,
+              top_k=None,
+          ),
+      },
+  )
+  return cluster_config
+
+
+def build_trainer(rl_cluster, cfg, derived, _multi_turn_cfg):
+  ppo_cfg = cfg.trainer.ppo
+  ppo_config = PpoConfigExp(
+      num_ppo_epochs=int(ppo_cfg.num_ppo_epochs),
+      gamma=float(ppo_cfg.gamma),
+      gae_lambda=float(ppo_cfg.gae_lambda),
+      beta=float(ppo_cfg.beta),
+      epsilon=float(ppo_cfg.epsilon),
+      clip_range_value=float(ppo_cfg.clip_range_value),
+      entropy_coef=float(ppo_cfg.entropy_coef),
+      epsilon_low=float(ppo_cfg.epsilon_low),
+      epsilon_high=float(ppo_cfg.epsilon_high),
+      epsilon_c=float(ppo_cfg.epsilon_c),
+      kl_method=str(ppo_cfg.kl_method),
+      # Fixed T to stabilize JIT shapes
+      max_completion_length=int(ppo_cfg.max_completion_length),
+  )
+  trainer = PpoLearnerExp(
+      rl_cluster=rl_cluster,
+      ppo_config=ppo_config,
+      reward_fns=_dummy_reward_fn,
+      multi_turn_cfg=_multi_turn_cfg,
+      multi_turn_processor=None,
+      multi_turn_validation=False,
+  )
+  return trainer
+
+
+# ======================= Debug helpers =======================
+def _tree_allclose(a, b, rtol=1e-5, atol=1e-6):
+  return jax.tree_util.tree_all(
+      jax.tree.map(lambda x, y: jnp.allclose(x, y, rtol=rtol, atol=atol), a, b)
   )
 
 
-# Training config
-cluster_config = rl_cluster_lib.ClusterConfig(
-  role_to_mesh={
-    rl_cluster_lib.Role.ACTOR: mesh,
-    rl_cluster_lib.Role.CRITIC: mesh,
-    rl_cluster_lib.Role.REFERENCE: mesh,
-    rl_cluster_lib.Role.ROLLOUT: mesh,
-  },
-  rollout_engine='vanilla',
-  offload_to_cpu=CPU_OFFLOAD,
-  training_config=rl_cluster_lib.RLTrainingConfig(
-    actor_optimizer=actor_optimizer,
-    critic_optimizer=critic_optimizer,
-    eval_every_n_steps=EVAL_EVERY_N_STEPS,
-    max_steps=MAX_STEPS,
-    gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-    # metrics logging
-    metrics_logging_options=metrics_logging_options,
-    # checkpoint saving
-    checkpoint_root_directory=CKPT_DIR,
-    checkpointing_options=checkpointing_options,
-  ),
-  rollout_config={
-    rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
-      max_tokens_to_generate=TOTAL_GENERATION_STEPS,
-      max_prompt_length=MAX_PROMPT_LENGTH,
-      kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-      temperature=TEMPERATURE,
-      top_p=TOP_P,
-      top_k=TOP_K,
-    ),
-    rl_cluster_lib.Mode.EVAL: base_rollout.RolloutConfig(
-      max_tokens_to_generate=TOTAL_GENERATION_STEPS,
-      max_prompt_length=MAX_PROMPT_LENGTH,
-      kv_cache_size=MAX_PROMPT_LENGTH + TOTAL_GENERATION_STEPS + 256,
-      temperature=EVAL_TEMPERATURE,
-      top_p=1.0,
-      top_k=None,
-    ),
-  },
+@hydra_main(
+    config_path="../configs", config_name="tunix_base", version_base=None
 )
+def main(cfg: DictConfig):
+  # Ensure W&B is initialized for all logging paths (including trainer close hooks)
+  try:
+    if wandb.run is None:
+      wandb.init(
+          project="tunix",
+          config=OmegaConf.to_container(cfg, resolve=True),
+          reinit=False,
+      )
+      print("W&B run URL:", wandb.run.url)
+  except Exception:
+    pass
 
-# todo: add per-mode rollout config for training and evaluation (especially for validation)
+  # Use Hydra cfg directly
+  derived = derive_hparams(cfg)
+  _print_config_summary(cfg, derived)
 
-ppo_config = PpoConfigExp(
-  num_ppo_epochs=NUM_PPO_EPOCHS,
-  mini_batch_size=MINI_BATCH_SIZE,
-  gamma=GAMMA,
-  gae_lambda=GAE_LAMBDA,
-  beta=BETA,
-  epsilon=EPSILON,
-  vf_coef=VF_COEF,
-  clip_range_value=CLIP_RANGE_VALUE,
-  # Entropy regularization
-  entropy_coeff=ENTROPY_COEFF,
-  aggs_mode=ENTROPY_AGGS_MODE,
-  # ===== MODIFICATION: Asymmetric + dual-clip PPO hyperparameters =====
-  clip_ratio_low=CLIP_RATIO_LOW,
-  clip_ratio_high=CLIP_RATIO_HIGH,
-  clip_ratio_c=CLIP_RATIO_C,
-  kl_penalty_method=kl_penalty_method,
-)
-# RL cluster
-rl_cluster = rl_cluster_lib.RLCluster(
-    actor=policy_qwen2,
-    critic=critic_qwen2,
-    reference=qwen2_ref,
-    tokenizer=qwen_tokenizer,
-    cluster_config=cluster_config,
-)
-# Multi-turn PPO Trainer (experimental)
-ppo_trainer = PpoLearnerExp(
-  rl_cluster=rl_cluster,
-  ppo_config=ppo_config,
-  reward_fns=_dummy_reward_fn,
-  multi_turn_cfg=multi_turn_cfg,
-  multi_turn_processor=None,
-  multi_turn_validation=False,
-)
+  # Build dataset (use derived num_batches and mini_batch_size for placeholder sizing)
+  dataset = get_dataset(
+      derived["num_batches"], derived["mini_batch_size"], "train"
+  )
 
-with mesh:
-  ppo_trainer.train(dataset)
+  # Init models
+  policy_qwen2, critic_qwen2, qwen2_ref, tokenizer, mesh, model_config = (
+      build_models_and_tokenizer(cfg, derived)
+  )
 
+  # Debug: check distinct objects and initial parameter equality
+  try:
+    print("policy/ref ids:", id(policy_qwen2), id(qwen2_ref))
+    pol_state = nnx.state(policy_qwen2)
+    ref_state = nnx.state(qwen2_ref)
+    print("initial states equal:", _tree_allclose(pol_state, ref_state))
+  except Exception as e:
+    print("[debug] sanity check failed:", e)
 
-try:
-  wandb.finish()
-except Exception:
-  pass
+  # RL cluster and trainer
+  cluster_config = build_cluster_config(mesh, tokenizer, derived, cfg)
+  with mesh:
+    rl_cluster = rl_cluster_lib.RLCluster(
+        actor=policy_qwen2,
+        critic=critic_qwen2,
+        reference=qwen2_ref,
+        tokenizer=tokenizer,
+        cluster_config=cluster_config,
+    )
+    trainer = build_trainer(rl_cluster, cfg, derived, cfg)
+    trainer.train(dataset)
+
+  try:
+    wandb.finish()
+  except Exception:
+    pass
 
 
+if __name__ == "__main__":
+  main()

@@ -41,47 +41,65 @@ rollout:
   # Show tqdm progress bars for concurrent steps
   show_tqdm: False
 
-# ------ PPO / Training Hyperparameters ------
-ppo:
-  num_ppo_epochs: 1
-  mini_batch_size: 4
-  gamma: 1.0
-  gae_lambda: 1.0
-  beta: 0.001
-  epsilon: 0.2
-  vf_coef: 1.0
-  clip_range_value: 0.5
-  entropy_coeff: 0.001
-  aggs_mode: token-mean
-  clip_ratio_low: 0.2
-  clip_ratio_high: 0.28
-  clip_ratio_c: 3.0
-  kl_penalty_method: k1
+# ------ Cluster configuration (RLCluster) ------
+cluster:
+  mesh:
+    shape: [2, 2]
+    axes: ["fsdp", "tp"]
+  # role_to_mesh can be a mapping per role in future. For now "same" means
+  # use the single mesh for all roles.
+  role_to_mesh: same
+  rollout_engine: vanilla  # vanilla or vllm
+  offload_to_cpu: false
+  training_config:
+    # Scheduling and evaluation
+    mini_batch_size: 32
+    training_micro_batch_size: 4
+    rollout_micro_batch_size: 32
+    compute_logps_micro_batch_size: 32
+    eval_every_n_steps: -1 # must be divisible by gradient_accumulation_steps
+    max_steps: -1  # -1 to let script derive
+    checkpoint:
+      save_interval_steps: 500
+      max_to_keep: 1
+  rollout_config:
+    train:
+      max_prompt_length: 2048
+      total_generation_steps: 100
+      temperature: 1.0
+      top_p: 1.0
+      top_k: null
+    eval:
+      max_prompt_length: 2048
+      total_generation_steps: 100
+      temperature: 1.0
+      top_p: 1.0
+      top_k: null
 
-training:
-  gradient_accumulation_steps: 8
-  max_steps: -1  # set -1 to enable max steps based on previous configs
-  eval_every_n_steps: -1  # set -1 to enable eval every n steps based on previous configs
-  actor_lr: 1.0e-6
-  critic_lr: 1.0e-5
-  b1: 0.9
-  b2: 0.999
-  weight_decay: 0.01
-  max_grad_norm: 1.0
-  save_interval_steps: 500
-  max_to_keep: 1
-
-mesh:
-  shape: [2, 2]
-  axes: ["fsdp", "tp"]
-
-rollout_runtime:
-  max_prompt_length: 2048
-  total_generation_steps: 100
-  temperature_train: 1.0
-  temperature_eval: 1.0
-  top_p: 1.0
-  top_k: null
+# ------ Trainer configuration ------
+trainer:
+  ppo:
+    num_ppo_epochs: 1
+    gamma: 1.0
+    gae_lambda: 1.0
+    beta: 0.001
+    epsilon: 0.2
+    clip_range_value: 0.5
+    entropy_coef: 0.001
+    epsilon_low: 0.2
+    epsilon_high: 0.28
+    epsilon_c: 3.0
+    kl_method: kl
+    max_completion_length: 2048
+  optim:
+    gradient_accumulation_steps: 8
+    actor_lr: 1.0e-6
+    critic_lr: 1.0e-5
+    b1: 0.9
+    b2: 0.999
+    weight_decay: 0.01
+    max_grad_norm: 1.0
+    type: constant
 
 # ------ Model artifacts ------
 model:

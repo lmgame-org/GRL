@@ -10,4 +10,4 @@
 [submodule "tunix"]
 	path = tunix
 	url = https://github.com/Yuxuan-Zhang-Dexter/tunix.git
-	branch = main
+	branch = tunix_main_09_23_2025
