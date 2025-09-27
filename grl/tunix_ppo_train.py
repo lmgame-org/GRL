@@ -280,6 +280,29 @@ def _print_config_summary(cfg, derived):
 
 
 # ======================= Model building helpers =======================
+def get_model_config_from_repo_id(repo_id: str):
+  """Get the appropriate model configuration based on the repo_id."""
+  repo_id_lower = repo_id.lower()
+
+  if "qwen2.5-7b" in repo_id_lower or "qwen2.5-7b-instruct" in repo_id_lower:
+    return model.ModelConfig.qwen2_5_7b()
+  elif "qwen2.5-3b" in repo_id_lower or "qwen2.5-3b-instruct" in repo_id_lower:
+    return model.ModelConfig.qwen2_5_3b()
+  elif (
+      "qwen2.5-0.5b" in repo_id_lower
+      or "qwen2.5-0.5b-instruct" in repo_id_lower
+  ):
+    return model.ModelConfig.qwen2_5_0_5b()
+  elif "deepseek-r1-distill-qwen-1.5b" in repo_id_lower:
+    return model.ModelConfig.deepseek_r1_distill_qwen_1_5b()
+  else:
+    # Default fallback - log warning and use 7B config
+    print(
+        f"Warning: Unknown model repo_id '{repo_id}', defaulting to qwen2_5_7b config"
+    )
+    return model.ModelConfig.qwen2_5_7b()
+
+
 def download_model_weights(repo_id: str, local_dir: str) -> str:
   """Download model weights and tokenizer assets; return the resolved path."""
   downloaded = snapshot_download(
@@ -311,30 +334,68 @@ def save_intermediate_state(module: nnx.Module, save_dir: str) -> None:
   _, state = nnx.split(module)
   checkpoint_path = os.path.join(Path(save_dir), "state")
   if not os.path.exists(checkpoint_path):
+    print(f"Saving intermediate checkpoint to {checkpoint_path}")
     checkpointer.save(checkpoint_path, state)
-    # Ensure filesystem settles before continuing (matches original behavior)
-    time.sleep(60)
 
+    # Wait for checkpoint to be fully saved with proper completion check
+    max_wait_time = 300  # 5 minutes max wait
+    wait_interval = 10  # Check every 10 seconds
+    elapsed_time = 0
 
-def build_reference_model_from_ckpt(ckpt_path: str, mesh):
-  """Restore reference model and return (model, mesh, model_config)."""
-  model_config = model.ModelConfig.qwen2_5_0_5b()
-  with mesh:
-    abs_qwen2: nnx.Module = nnx.eval_shape(
-        lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+    while elapsed_time < max_wait_time:
+      if os.path.exists(checkpoint_path):
+        # Additional check: ensure it's not just a temp directory
+        if not os.path.exists(f"{checkpoint_path}.orbax-checkpoint-tmp"):
+          print(f"Checkpoint saved successfully after {elapsed_time}s")
+          return
+      time.sleep(wait_interval)
+      elapsed_time += wait_interval
+      print(f"Waiting for checkpoint completion... ({elapsed_time}s elapsed)")
+
+    print(
+        f"Warning: Checkpoint save timed out after {max_wait_time}s, continuing anyway"
     )
-  abs_state = nnx.state(abs_qwen2)
-  abs_state = jax.tree.map(
-      lambda a, s: jax.ShapeDtypeStruct(a.shape, jnp.float32, sharding=s),
-      abs_state,
-      nnx.get_named_sharding(abs_state, mesh),
-  )
-  checkpointer = ocp.StandardCheckpointer()
-  restored_params = checkpointer.restore(ckpt_path, target=abs_state)
 
-  graph_def, _ = nnx.split(abs_qwen2)
-  qwen2_ref = nnx.merge(graph_def, restored_params)
-  return qwen2_ref, mesh, model_config
+
+def build_reference_model_from_ckpt(ckpt_path: str, mesh, repo_id: str):
+  """Restore reference model and return (model, mesh, model_config)."""
+  model_config = get_model_config_from_repo_id(repo_id)
+
+  # Check if checkpoint exists before attempting restoration
+  if not os.path.exists(ckpt_path):
+    print(f"Warning: Checkpoint not found at {ckpt_path}")
+    print("Falling back to creating a fresh model...")
+    # Create a fresh model instead of restoring from checkpoint
+    with mesh:
+      qwen2_ref = model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+    return qwen2_ref, mesh, model_config
+
+  try:
+    with mesh:
+      abs_qwen2: nnx.Module = nnx.eval_shape(
+          lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+      )
+    abs_state = nnx.state(abs_qwen2)
+    abs_state = jax.tree.map(
+        lambda a, s: jax.ShapeDtypeStruct(a.shape, jnp.float32, sharding=s),
+        abs_state,
+        nnx.get_named_sharding(abs_state, mesh),
+    )
+    checkpointer = ocp.StandardCheckpointer()
+    restored_params = checkpointer.restore(ckpt_path, target=abs_state)
+
+    graph_def, _ = nnx.split(abs_qwen2)
+    qwen2_ref = nnx.merge(graph_def, restored_params)
+    print(f"Successfully restored model from checkpoint: {ckpt_path}")
+    return qwen2_ref, mesh, model_config
+
+  except Exception as e:
+    print(f"Error restoring checkpoint from {ckpt_path}: {e}")
+    print("Falling back to creating a fresh model...")
+    # Fallback: create a fresh model
+    with mesh:
+      qwen2_ref = model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
+    return qwen2_ref, mesh, model_config
 
 
 def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
@@ -366,7 +427,7 @@ def build_models_and_tokenizer(cfg, derived):
   repo_id = str(cfg.model.repo_id)
   model_dir = download_model_weights(repo_id, model_cp_path)
   mesh = jax.make_mesh(*derived["mesh"])  # [shape, axes]
-  model_config = model.ModelConfig.qwen2_5_0_5b()
+  model_config = get_model_config_from_repo_id(repo_id)
   with mesh:
     qwen2 = load_qwen2_from_safetensors(model_dir, model_config)
   save_intermediate_state(qwen2, derived["intermediate_ckpt_dir"])
@@ -374,7 +435,9 @@ def build_models_and_tokenizer(cfg, derived):
   gc.collect()
 
   qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
-      os.path.join(Path(derived["intermediate_ckpt_dir"]), "state"), mesh
+      os.path.join(Path(derived["intermediate_ckpt_dir"]), "state"),
+      mesh,
+      repo_id,
   )
   policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
   tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
@@ -649,16 +712,36 @@ def _tree_allclose(a, b, rtol=1e-5, atol=1e-6):
 )
 def main(cfg: DictConfig):
   # Ensure W&B is initialized for all logging paths (including trainer close hooks)
+  wandb_initialized = False
   try:
     if wandb.run is None:
+      # Generate timestamp-based run name
+      from datetime import datetime
+
+      run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
       wandb.init(
           project="tunix",
+          name=run_name,
           config=OmegaConf.to_container(cfg, resolve=True),
           reinit=False,
       )
       print("W&B run URL:", wandb.run.url)
-  except Exception:
-    pass
+      wandb_initialized = True
+    else:
+      wandb_initialized = True
+      print("W&B already initialized")
+  except Exception as e:
+    print(f"Warning: Failed to initialize WandB: {e}")
+    print("Continuing without WandB logging...")
+    wandb_initialized = False
+
+  # If WandB failed to initialize, disable it globally to prevent metrics logger from trying
+  if not wandb_initialized:
+    import os
+
+    os.environ["WANDB_MODE"] = "disabled"
+    print("Disabled WandB globally to prevent metrics logger conflicts")
 
   # Use Hydra cfg directly
   derived = derive_hparams(cfg)
@@ -696,10 +779,13 @@ def main(cfg: DictConfig):
     trainer = build_trainer(rl_cluster, cfg, derived, cfg)
     trainer.train(dataset)
 
-  try:
-    wandb.finish()
-  except Exception:
-    pass
+    # Finish WandB after all cleanup operations are complete
+    if wandb_initialized:
+      try:
+        wandb.finish()
+        print("WandB session finished successfully")
+      except Exception as e:
+        print(f"Warning: Failed to finish WandB session: {e}")
 
 
 if __name__ == "__main__":
