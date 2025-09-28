@@ -62,14 +62,13 @@ GRL (Game Reinforcement Learning) is an open‑source framework that post‑trai
    conda create --name grl python=3.12
    conda activate grl
 
-   # Submodule installation
-   bash scripts/install_submodules.sh --all
-   # Or only: --verl (GPU/VERL), --tunix (TPU/JAX), or --webshop
-
-   # Torch + FlashAttention (Linux + CUDA)
-   # Required for VERL (GPU) workflows; skip for TPU-only Tunix runs
-   pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
-   pip install flash-attn==2.8.0.post2 --no-build-isolation
+   # Submodule installation (pick ONE backend)
+   # EITHER Tunix (TPU/JAX):
+   #   bash scripts/install_submodules.sh --tunix
+   # OR VERL (GPU/PyTorch):
+   #   bash scripts/install_submodules.sh --verl
+   # Optional WebShop tooling only:
+   #   bash scripts/install_submodules.sh --webshop
 
    # install GRL
    pip install -e .
@@ -89,12 +88,9 @@ bash scripts/install_submodules.sh --tunix
 ```
 
 #### Verl Installation (only)
-Use this if you plan to run GPU/PyTorch with VERL only. Torch and FlashAttention are required on Linux + CUDA:
+Use this if you plan to run GPU/PyTorch with VERL only. The installation script will also install the pinned GPU dependencies (Torch and FlashAttention on Linux + CUDA) for you:
 ```bash
 bash scripts/install_submodules.sh --verl
-# Torch + FlashAttention (required for VERL GPU workflows)
-pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
-pip install flash-attn==2.8.0.post2 --no-build-isolation
 ```
 
 #### WebShop Installation (only)

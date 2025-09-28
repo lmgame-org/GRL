@@ -86,19 +86,25 @@ parse_arguments() {
         esac
     done
 
-    # Set flags for --all
+    # Disallow --all; require user to pick ONE backend (Tunix or VERL). WebShop is optional.
     if [[ "$INSTALL_ALL_SUBMODULES" == 1 ]]; then
-        INSTALL_VERL=1
-        INSTALL_WEBSHOP=1
-        INSTALL_TUNIX=1
+        print_error "--all is no longer supported. Pick ONE backend: --tunix or --verl (WebShop is optional)."
+        exit 1
     fi
 
-    # If no specific submodules requested, default to all (backward compatibility)
-    if [[ "$INSTALL_VERL" == 0 && "$INSTALL_WEBSHOP" == 0 && "$INSTALL_TUNIX" == 0 ]]; then
-        print_warning "No specific submodules requested, installing all for backward compatibility"
-        INSTALL_VERL=1
-        INSTALL_WEBSHOP=1
-        INSTALL_TUNIX=1
+    # If both backends selected, fail fast
+    if [[ "$INSTALL_VERL" == 1 && "$INSTALL_TUNIX" == 1 ]]; then
+        print_error "Select only one backend: --tunix (TPU/JAX) OR --verl (GPU/PyTorch)."
+        exit 1
+    fi
+
+    # If none selected, print help and exit
+    if [[ "$INSTALL_VERL" == 0 && "$INSTALL_TUNIX" == 0 ]]; then
+        print_error "No backend selected. Use --tunix or --verl (WebShop optional via --webshop)."
+        echo "Try: $0 --tunix    # TPU/JAX"
+        echo "     $0 --verl     # GPU/PyTorch"
+        echo "     $0 --webshop  # optional tooling"
+        exit 1
     fi
 }
 
@@ -195,6 +201,25 @@ install_verl() {
     cd ..
     
     print_success "verl installed in editable mode"
+
+    # Install pinned GPU stack for VERL (Torch + FlashAttention)
+    print_step "Installing GPU stack for VERL (torch + flash-attn)"
+    # Prefer official wheels; fall back cleanly
+    set +e
+    pip install --upgrade torch==2.7.1
+    if python -c "import platform, torch; import sys; print(int(platform.system().lower()=='linux' and torch.cuda.is_available()))" | grep -q "1"; then
+        pip install --upgrade flash-attn==2.8.0.post2 --no-build-isolation || print_warning "flash-attn install failed; continuing"
+    else
+        print_warning "Non-Linux or no CUDA: skipping flash-attn"
+    fi
+    set -e
+    # Verify torch presence
+    if python -c "import torch" >/dev/null 2>&1; then
+        print_success "torch ✓"
+    else
+        print_error "torch missing after VERL install; please check CUDA/Python compatibility"
+        exit 1
+    fi
 }
 
 # Install tunix (JAX-based LLM post-training library)
