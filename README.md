@@ -200,9 +200,10 @@ GRL supports both GPU and TPU training backends:
 
 ### TPU Configurations (JAX + Tunix)
 
-| TPU Type | Chips | Mesh | Agent Groups | Group Size | Total Agents | Default Model | Task |
+| TPU Type | Chips | Mesh(fsdp, tp) | Agent Groups | Group Size | Total Agents | Default Model | Task |
 |---|---:|---|---:|---:|---:|---|---|
 | TPU v4 | 4 | (2,2) | 8 | 16 | 128 | Qwen/Qwen2.5-0.5B-Instruct | Sokoban |
+| TPU v5P | 8 | (2,4) | 8 | 16 | 128 | Qwen/Qwen2.5-7B-Instruct | Sokoban |
 
 
 > **Note:** The framework automatically scales based on available hardware. Adjust parameters in the training scripts for best performance on your setup.
