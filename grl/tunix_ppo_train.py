@@ -37,7 +37,23 @@ from grl.trainer.tunix_agent_trainer import PpoConfigExp, PpoLearnerExp
 
 from jax_smi import initialise_tracking
 
+import pathwaysutils
+import jax
+pathwaysutils.initialize()
+
+print(jax.devices())
+
+
+try:
+  wandb.login(key="e27080071466d108dc7c16fc6ff885b296d8b608")
+  print("linchai: logged in to W&B")
+except wandb.errors.UsageError as e:
+  print(f"Failed to log in to W&B: {e}")
+  # Handle the error, maybe disable W&B logging
+  wandb.init(mode="disabled")
+
 initialise_tracking()
+
 
 # ======================= Globals (Config) =======================
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -81,7 +97,7 @@ def derive_hparams(cfg):
     mesh_axes = tuple(str(x) for x in cfg.cluster.mesh.axes)
     mesh = [mesh_shape, mesh_axes]
   except Exception:
-    mesh = [(2, 2), ("fsdp", "tp")]
+    mesh = [(2, 4), ("fsdp", "tp")]
 
   # Rollout runtime (cluster.rollout_config)
   train_rc = cfg.cluster.rollout_config.train
@@ -321,105 +337,11 @@ def download_model_weights(repo_id: str, local_dir: str) -> str:
   return str(downloaded)
 
 
-def load_qwen2_from_safetensors(model_dir: str, model_config) -> nnx.Module:
+def load_qwen2_from_safetensors(model_dir: str, model_config, mesh, dtype=jnp.float32) -> nnx.Module:
   """Load Qwen2 from local safetensors directory."""
   if list(epath.Path(model_dir).expanduser().glob("*.safetensors")):
-    return params.create_model_from_safe_tensors(model_dir, model_config)
+    return params.create_model_from_safe_tensors(model_dir, model_config, mesh, dtype=dtype)
   raise ValueError(f"No safetensors found in {model_dir}")
-
-
-def save_intermediate_state(module: nnx.Module, save_dir: str) -> None:
-  """Save an intermediate nnx state checkpoint once if it doesn't exist."""
-  checkpointer = ocp.StandardCheckpointer()
-  _, state = nnx.split(module)
-  checkpoint_path = os.path.join(Path(save_dir), "state")
-  if not os.path.exists(checkpoint_path):
-    print(f"Saving intermediate checkpoint to {checkpoint_path}")
-    checkpointer.save(checkpoint_path, state)
-
-    # Wait for checkpoint to be fully saved with proper completion check
-    max_wait_time = 300  # 5 minutes max wait
-    wait_interval = 10  # Check every 10 seconds
-    elapsed_time = 0
-
-    while elapsed_time < max_wait_time:
-      if os.path.exists(checkpoint_path):
-        # Additional check: ensure it's not just a temp directory
-        if not os.path.exists(f"{checkpoint_path}.orbax-checkpoint-tmp"):
-          print(f"Checkpoint saved successfully after {elapsed_time}s")
-          return
-      time.sleep(wait_interval)
-      elapsed_time += wait_interval
-      print(f"Waiting for checkpoint completion... ({elapsed_time}s elapsed)")
-
-    print(
-        f"Warning: Checkpoint save timed out after {max_wait_time}s, continuing anyway"
-    )
-
-
-def build_reference_model_from_ckpt(ckpt_path: str, mesh, repo_id: str):
-  """Restore reference model and return (model, mesh, model_config)."""
-  model_config = get_model_config_from_repo_id(repo_id)
-
-  # Check if checkpoint exists before attempting restoration
-  if not os.path.exists(ckpt_path):
-    print(f"Warning: Checkpoint not found at {ckpt_path}")
-    print("Falling back to creating a fresh model...")
-    # Create a fresh model instead of restoring from checkpoint
-    with mesh:
-      qwen2_ref = model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
-    return qwen2_ref, mesh, model_config
-
-  try:
-    with mesh:
-      abs_qwen2: nnx.Module = nnx.eval_shape(
-          lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
-      )
-    abs_state = nnx.state(abs_qwen2)
-    abs_state = jax.tree.map(
-        lambda a, s: jax.ShapeDtypeStruct(a.shape, jnp.float32, sharding=s),
-        abs_state,
-        nnx.get_named_sharding(abs_state, mesh),
-    )
-    checkpointer = ocp.StandardCheckpointer()
-    restored_params = checkpointer.restore(ckpt_path, target=abs_state)
-
-    graph_def, _ = nnx.split(abs_qwen2)
-    qwen2_ref = nnx.merge(graph_def, restored_params)
-    print(f"Successfully restored model from checkpoint: {ckpt_path}")
-    return qwen2_ref, mesh, model_config
-
-  except Exception as e:
-    print(f"Error restoring checkpoint from {ckpt_path}: {e}")
-    print("Falling back to creating a fresh model...")
-    # Fallback: create a fresh model
-    with mesh:
-      qwen2_ref = model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
-    return qwen2_ref, mesh, model_config
-
-
-def clone_module_like(src_module: nnx.Module, model_config, mesh) -> nnx.Module:
-  """Create a separate nnx.Module instance with the same parameters and sharding.
-
-  Ensures the returned module is a distinct Python object so optimizer updates on
-  the actor do not affect the frozen reference.
-  """
-  with mesh:
-    abs_mod: nnx.Module = nnx.eval_shape(
-        lambda: model.Qwen2(model_config, rngs=nnx.Rngs(params=0))
-    )
-  gdef, _ = nnx.split(abs_mod)
-  src_state = nnx.state(src_module)
-  # Best-effort: ensure arrays are placed on the provided mesh sharding
-  try:
-    target_sharding = nnx.get_named_sharding(src_state, mesh)
-    src_state = jax.tree.map(
-        lambda x, s: jax.device_put(x, s), src_state, target_sharding
-    )
-  except Exception:
-    pass
-  return nnx.merge(gdef, src_state, copy=True)
-
 
 def build_models_and_tokenizer(cfg, derived):
   """Download/load models, build reference/actor/critic, tokenizer and mesh."""
@@ -429,23 +351,15 @@ def build_models_and_tokenizer(cfg, derived):
   mesh = jax.make_mesh(*derived["mesh"])  # [shape, axes]
   model_config = get_model_config_from_repo_id(repo_id)
   with mesh:
-    qwen2 = load_qwen2_from_safetensors(model_dir, model_config)
-  save_intermediate_state(qwen2, derived["intermediate_ckpt_dir"])
-  del qwen2
-  gc.collect()
-
-  qwen2_ref, mesh, model_config = build_reference_model_from_ckpt(
-      os.path.join(Path(derived["intermediate_ckpt_dir"]), "state"),
-      mesh,
-      repo_id,
-  )
-  policy_qwen2 = clone_module_like(qwen2_ref, model_config, mesh)
+    qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
+    policy_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh)
+    rollout_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
+    critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
   tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
   if tokenizer.pad_token_id is None:
     tokenizer.pad_token = tokenizer.eos_token
   print("eos_id:", tokenizer.eos_token_id, "pad_id:", tokenizer.pad_token_id)
-  critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
-  return policy_qwen2, critic_qwen2, qwen2_ref, tokenizer, mesh, model_config
+  return policy_qwen2, critic_qwen2, qwen2_ref, rollout_qwen2, tokenizer, mesh, model_config
 
 
 """
@@ -643,7 +557,7 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
           max_steps=derived["max_steps"],
           gradient_accumulation_steps=derived["grad_accum"],
           metrics_logging_options=metrics_opts,
-          checkpoint_root_directory=derived["ckpt_dir"],
+          # checkpoint_root_directory=derived["ckpt_dir"],
           checkpointing_options=checkpointing_options,
       ),
       rollout_config={
@@ -753,7 +667,7 @@ def main(cfg: DictConfig):
   )
 
   # Init models
-  policy_qwen2, critic_qwen2, qwen2_ref, tokenizer, mesh, model_config = (
+  policy_qwen2, critic_qwen2, qwen2_ref, rollout_qwen2, tokenizer, mesh, model_config = (
       build_models_and_tokenizer(cfg, derived)
   )
 
@@ -773,6 +687,7 @@ def main(cfg: DictConfig):
         actor=policy_qwen2,
         critic=critic_qwen2,
         reference=qwen2_ref,
+        rollout=rollout_qwen2,
         tokenizer=tokenizer,
         cluster_config=cluster_config,
     )

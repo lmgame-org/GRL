@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
+import logging
 import random
 from grl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput
 
@@ -116,6 +117,7 @@ class BaseAgent:
     Returns:
         Tuple[str, List[str]]: (processed_llm_response, actions_list)
     """
+    logging.info("Raw LLM response: %s", llm_response)
     import re
 
     if self.agent_config.get("use_think_answer_token", True):
@@ -186,6 +188,7 @@ class BaseAgent:
     history = []
     trajectory_deque = self.trajectory_history.get()
     for traj in trajectory_deque:
+      logging.info("traj: %s", traj)
       history_entry = {
           "state": traj.state,
           "actions_left": traj.actions_left,

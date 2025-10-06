@@ -1,5 +1,6 @@
 # sync_multi_turn_rollout.py
 from typing import List, Dict, Any, Union
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
@@ -203,6 +204,7 @@ class SyncMultiTurnRollout:
             if agent.agent_config.get("enable_think", True)
             else "<answer>"
         )
+      logging.info("Prompt (len %d): %s", len(prompt_str), prompt_str)
       return idx, prompt_str
 
     with ThreadPoolExecutor(max_workers=self.num_prompt_threads) as ex:
@@ -312,7 +314,7 @@ class SyncMultiTurnRollout:
     Iterate cfg.agent.max_turn turns, breaking early if all done.
     """
     self._reset_batch_agents()
-
+    logging.info("after resetting, rollout max_turns: %d", self.max_turns)
     for _ in range(self.max_turns):
       if self.done_mask.all():
         break
@@ -325,6 +327,9 @@ class SyncMultiTurnRollout:
 
       # Decode responses and update environment outputs
       llm_responses_str = self.decode_llm_responses(llm_responses)
+      logging.info("### len of llm_responses_str: %s", len(llm_responses_str))
+      for i in range(len(llm_responses_str)):
+        logging.info("### llm response: %s", llm_responses_str[i])
       self.env_outs = self.get_batch_env_outputs(llm_responses_str)
 
       self.step_cnt += 1
@@ -731,6 +736,7 @@ class SyncMultiTurnRollout:
     group_seeds = [
         base_seed + group_id for group_id in range(self.total_group_num)
     ]
+    logging.info("Resetting batch agents with base_seed=%d", base_seed)
 
     initial_env_outs = []
 

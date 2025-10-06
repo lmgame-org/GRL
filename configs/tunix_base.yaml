@@ -44,7 +44,7 @@ rollout:
 # ------ Cluster configuration (RLCluster) ------
 cluster:
   mesh:
-    shape: [2, 2]
+    shape: [2, 4]
     axes: ["fsdp", "tp"]
   # role_to_mesh can be a mapping per role in future. For now "same" means
   # use the single mesh for all roles.
@@ -54,7 +54,7 @@ cluster:
   training_config:
     # Scheduling and evaluation
     mini_batch_size: 32
-    training_micro_batch_size: 4
+    training_micro_batch_size: 1
     rollout_micro_batch_size: 32
     compute_logps_micro_batch_size: 32
     eval_every_n_steps: -1 # must be divisible by gradient_accumulation_steps
@@ -65,13 +65,13 @@ cluster:
   rollout_config:
     train:
       max_prompt_length: 2048
-      total_generation_steps: 100
+      total_generation_steps: 400
       temperature: 1.0
       top_p: 1.0
       top_k: null
     eval:
       max_prompt_length: 2048
-      total_generation_steps: 100
+      total_generation_steps: 400
       temperature: 1.0
       top_p: 1.0
       top_k: null
@@ -90,9 +90,9 @@ trainer:
     epsilon_high: 0.28
     epsilon_c: 3.0
     kl_method: kl
-    max_completion_length: 2048
+    max_completion_length: 4096
   optim:
-    gradient_accumulation_steps: 8
+    gradient_accumulation_steps: 32
     actor_lr: 1.0e-6
     critic_lr: 1.0e-5
     b1: 0.9
@@ -103,5 +103,5 @@ trainer:
 
 # ------ Model artifacts ------
 model:
-  repo_id: Qwen/Qwen2.5-0.5B-Instruct
+  repo_id: Qwen/Qwen2.5-7B-Instruct
 

@@ -1,4 +1,5 @@
 # ─────────────────── IMPORTS ───────────────────
+import logging
 import random
 import yaml
 from typing import List, Dict, Any, Tuple
@@ -46,6 +47,7 @@ class SokobanAgent(BaseAgent):
   def get_env_outputs(self, llm_response):
     """Process LLM outputs and get environment outputs."""
     llm_raw_response = llm_response
+    logging.info("### get_env_outputs llm_raw_response: %s", llm_raw_response)
 
     # Store raw response for debugging
     self.raw_response_list.append(llm_raw_response)
@@ -55,9 +57,10 @@ class SokobanAgent(BaseAgent):
     processed_llm_response, actions = self.parse_llm_response(
         llm_raw_response, enable_think=self.enable_think
     )
+    logging.info("len of actions: %s", len(actions))
 
-    # # debug printout
-    # self.print_processed_llm(processed_llm_response, actions)
+    # debug printout
+    self.print_processed_llm(processed_llm_response, actions)
 
     self.messages.append(
         {"role": "assistant", "content": processed_llm_response}
@@ -118,6 +121,7 @@ class SokobanAgent(BaseAgent):
         or invalid_actions
         or len(valid_actions) != len(actions)
     ):
+      logging.info(f"Invalid actions detected: {invalid_actions}, len(actions): {len(actions)}, len(valid_actions): {len(valid_actions)}")
       self.penalty += self.format_penalty
 
     # Execute valid actions with fault tolerance
@@ -137,6 +141,7 @@ class SokobanAgent(BaseAgent):
         # Continue with next action instead of crashing
         continue
 
+    logging.info("### len of executed actions: %s", len(executed_actions))
     # Update total actions consumed
     self.total_actions_consumed += len(executed_actions)
 
