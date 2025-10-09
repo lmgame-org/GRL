@@ -58,6 +58,7 @@ class SokobanAgent(BaseAgent):
         llm_raw_response, enable_think=self.enable_think
     )
     logging.info("len of actions: %s", len(actions))
+    logging.info("processed_llm_response: %s", processed_llm_response)
 
     # debug printout
     self.print_processed_llm(processed_llm_response, actions)
@@ -92,24 +93,30 @@ class SokobanAgent(BaseAgent):
           action = action_lookup_reverse[action_str_clean]
           # Validate action is in expected range
           if action in self.env_config["action_lookup"]:
+            logging.info(f"Valid Action '{action_str}' mapped to {action}")
             valid_actions.append(action)
           else:
+            logging.info(f"Invalid Action '{action_str}' mapped to {action}")
             invalid_actions.append(action_str)
         # Then try case-insensitive match
         elif action_str_clean.lower() in action_lookup_reverse_lower:
           action = action_lookup_reverse_lower[action_str_clean.lower()]
           # Validate action is in expected range
           if action in self.env_config["action_lookup"]:
+            logging.info(f"Valid Action in action_lookup '{action_str}' mapped to {action}")
             valid_actions.append(action)
           else:
+            logging.info(f"Invalid Action in action_lookup'{action_str}' mapped to {action}")
             invalid_actions.append(action_str)
         else:
           # Try parsing as integer
           action = int(action_str_clean)
           # Validate numeric action is in expected range
           if action in self.env_config["action_lookup"]:
+            logging.info(f"Valid Numeric Action '{action_str}' mapped to {action}")
             valid_actions.append(action)
           else:
+            logging.info(f"Invalid Numeric Action '{action_str}' mapped to {action}")
             invalid_actions.append(action_str)
       except (ValueError, KeyError, TypeError) as e:
         invalid_actions.append(action_str)

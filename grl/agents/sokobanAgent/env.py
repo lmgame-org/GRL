@@ -1,3 +1,4 @@
+import logging
 import gymnasium as gym
 from gym_sokoban.envs.sokoban_env import SokobanEnv as GymSokobanEnv
 import numpy as np
@@ -56,6 +57,7 @@ class SokobanEnv(GymSokobanEnv, BaseEnv):
     Take an action in the environment.
     Actions: 1=Up, 2=Down, 3=Left, 4=Right (from our config)
     """
+    logging.info(f"Taking action in env: {action}")
     previous_pos = self.player_position.copy()
     _, reward, done, _ = GymSokobanEnv.step(self, action)
     next_obs = self.render()
@@ -65,6 +67,7 @@ class SokobanEnv(GymSokobanEnv, BaseEnv):
         "action_is_valid": True,
         "success": self.boxes_on_target == self.num_boxes,
     }
+    logging.info(f"Step info: reward={reward}, done={done}, info={info}")
     return next_obs, reward, done, info
 
   def render(self, mode=None):
