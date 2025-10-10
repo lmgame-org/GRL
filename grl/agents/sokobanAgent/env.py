@@ -60,6 +60,7 @@ class SokobanEnv(GymSokobanEnv, BaseEnv):
     logging.info(f"Taking action in env: {action}")
     previous_pos = self.player_position.copy()
     _, reward, done, _ = GymSokobanEnv.step(self, action)
+    logging.info(f"step from GymSokobanEnv: {a=}, {reward=}, {done=}, {b=}")
     next_obs = self.render()
     action_effective = not np.array_equal(previous_pos, self.player_position)
     info = {
