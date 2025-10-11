@@ -25,16 +25,17 @@
 - [✅] Extend VERL `PPO_trainer.yaml` to support GRPO training.
     - [✅] Understand GRPO workflow in a theory 
     - [ ] Test GRPO Training
-- [ ] Integrate Sokoban coding agent into rollout
+- [ ] Integrate Sokoban coding agent into rollout (2)
    - [ ] Draft a minimal training recipe.
-    - [ ] write a universal rollout part by inputing rl dataset
-    - [ ] share the same agent_trainer.py 
+    - [ ] write a universal rollout part by inputting rl dataset
+    - [ ] modify agent trainer to support such input
 - [ ] Validate end‑to‑end with a small‑scale run and basic metrics.
 - [ ] Add SQLgym enviornment for coding evaluation.
 
 #### 1.2 System Design of Agent and Envs
-- [ ] Refactor env API and agent API to support GRPO‑style training.
+- [✅] Refactor env API and agent API to support GRPO‑style training.
     - System Design: Env Class, Agent Class, AgentGroupBuilder Class, RLDataset Class
+- [ ] Test Sokoban Coding Agent (1)
 
 Training Variables:
 1) sequence length
