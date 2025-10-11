@@ -150,3 +150,5 @@ content/
 setup.log
 
 code_style.sh
+
+models/

@@ -2,7 +2,7 @@
 
 ### Purpose & Impact
 
-- Elegant, modular training API
+- Elegant, lite, modular training API
   - Inspired by Tinker’s elegant design; positioned between Tinker (very elegant) and VERL (less elegant).
   - Disaggregate the LLM‑RL training flow into clear blocks with stable interfaces:
     - env API
@@ -22,20 +22,26 @@
 ### Implementation Plan
 
 #### 1.1 GRPO
-- [ ] Extend VERL `PPO_trainer.yaml` to support GRPO training.
-    - [ ] Understand GRPO workflow in a theory and codebase implementation
+- [✅] Extend VERL `PPO_trainer.yaml` to support GRPO training.
+    - [✅] Understand GRPO workflow in a theory 
+    - [ ] Test GRPO Training
 - [ ] Integrate Sokoban coding agent into rollout
    - [ ] Draft a minimal training recipe.
-   - [ ] Refactor env API and agent API to support GRPO‑style training.
+    - [ ] write a universal rollout part by inputing rl dataset
+    - [ ] share the same agent_trainer.py 
 - [ ] Validate end‑to‑end with a small‑scale run and basic metrics.
 - [ ] Add SQLgym enviornment for coding evaluation.
+
+#### 1.2 System Design of Agent and Envs
+- [ ] Refactor env API and agent API to support GRPO‑style training.
+    - System Design: Env Class, Agent Class, AgentGroupBuilder Class, RLDataset Class
 
 Training Variables:
 1) sequence length
 2) reward patterns ? 
 3) multi step and multi turn formation
 4) staged reinforcement learning: exploration -> converge 
-5) other rl aglrotihm: grpo, srpo, ppo and relevant hyperparameters
+5) other rl aglrotihm: grpo, srpo, ppo, dapo and relevant hyperparameters
 6) model sizes
 7) sft effect
 8) single game rl vs multi game rl
