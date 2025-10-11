@@ -23,10 +23,23 @@
 
 #### 1.1 GRPO
 - [ ] Extend VERL `PPO_trainer.yaml` to support GRPO training.
+    - [ ] Understand GRPO workflow in a theory and codebase implementation
 - [ ] Integrate Sokoban coding agent into rollout
    - [ ] Draft a minimal training recipe.
    - [ ] Refactor env API and agent API to support GRPO‑style training.
 - [ ] Validate end‑to‑end with a small‑scale run and basic metrics.
+- [ ] Add SQLgym enviornment for coding evaluation.
+
+Training Variables:
+1) sequence length
+2) reward patterns ? 
+3) multi step and multi turn formation
+4) staged reinforcement learning: exploration -> converge 
+5) other rl aglrotihm: grpo, srpo, ppo and relevant hyperparameters
+6) model sizes
+7) sft effect
+8) single game rl vs multi game rl
+
 
 
 ### Development & Contribution Style
@@ -47,3 +60,4 @@
   - Tests added/updated and pass locally (`pytest -q`) or via `bash tests/run_tests.sh`.
   - `./code_style.sh --check` passes.
   - Update docs when changing public APIs or interfaces.
+

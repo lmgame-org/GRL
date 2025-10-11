@@ -1,0 +1,210 @@
+_source_run_id:
+    value: rllm/deepscaler/lneoh94r
+_wandb:
+    value:
+        cli_version: 0.19.7
+        m: []
+        python_version: 3.10.16
+        t:
+            "1":
+                - 49
+                - 51
+                - 55
+                - 105
+            "2":
+                - 49
+                - 51
+                - 55
+                - 105
+            "3":
+                - 2
+                - 13
+                - 15
+                - 16
+                - 23
+                - 55
+                - 61
+                - 62
+            "4": 3.10.16
+            "5": 0.19.7
+            "8":
+                - 1
+                - 5
+            "12": 0.19.7
+            "13": linux-x86_64
+actor_rollout_ref:
+    value:
+        actor:
+            clip_ratio: 0.2
+            entropy_coeff: 0.0015
+            fsdp_config:
+                fsdp_size: -1
+                optimizer_offload: false
+                param_offload: false
+                wrap_policy:
+                    min_num_params: 0
+            grad_clip: 1
+            kl_loss_coef: 0.0001
+            kl_loss_type: low_var_kl
+            optim:
+                lr: 5e-07
+                lr_warmup_steps_ratio: 0
+                min_lr_ratio: null
+                total_training_steps: 2130
+                warmup_style: constant
+            ppo_epochs: 1
+            ppo_max_token_len_per_gpu: 27000
+            ppo_micro_batch_size: null
+            ppo_micro_batch_size_per_gpu: null
+            ppo_mini_batch_size: 32
+            shuffle: false
+            strategy: fsdp
+            ulysses_sequence_parallel_size: 1
+            use_dynamic_bsz: true
+            use_kl_loss: false
+        hybrid_engine: false
+        model:
+            enable_gradient_checkpointing: true
+            external_lib: null
+            path: checkpoints/deepscaler/deepscaler-code-32k-easy/global_step_320/actor/checkpoint
+            use_remove_padding: true
+        ref:
+            fsdp_config:
+                param_offload: true
+                wrap_policy:
+                    min_num_params: 0
+            log_prob_max_token_len_per_gpu: 27000
+            log_prob_micro_batch_size: null
+            log_prob_micro_batch_size_per_gpu: null
+            log_prob_use_dynamic_bsz: true
+            ulysses_sequence_parallel_size: 1
+        rollout:
+            async_engine: true
+            compute_reward: true
+            disable_log_stats: true
+            do_sample: true
+            dtype: bfloat16
+            enable_chunked_prefill: true
+            enforce_eager: false
+            free_cache_engine: false
+            gpu_memory_utilization: 0.85
+            ignore_eos: false
+            load_format: dummy_dtensor
+            log_prob_max_token_len_per_gpu: 27000
+            log_prob_micro_batch_size: null
+            log_prob_micro_batch_size_per_gpu: null
+            log_prob_use_dynamic_bsz: true
+            max_model_len: null
+            max_num_batched_tokens: 8192
+            max_num_seqs: 1024
+            "n": 8
+            n_val: 1
+            name: vllm
+            prompt_length: 2048
+            response_length: 24576
+            temperature: 0.6
+            tensor_model_parallel_size: 1
+            top_k: -1
+            top_p: 1
+            val_temperature: 0.6
+            vllm_log_prob: true
+algorithm:
+    value:
+        adv_estimator: grpo
+        gamma: 1
+        kl_ctrl:
+            kl_coef: 0.001
+            type: fixed
+        kl_penalty: kl
+        lam: 1
+critic:
+    value:
+        cliprange_value: 0.5
+        forward_max_token_len_per_gpu: 32768
+        forward_micro_batch_size: null
+        forward_micro_batch_size_per_gpu: null
+        grad_clip: 1
+        model:
+            enable_gradient_checkpointing: true
+            external_lib: null
+            fsdp_config:
+                fsdp_size: -1
+                optimizer_offload: false
+                param_offload: false
+                wrap_policy:
+                    min_num_params: 0
+            path: ~/models/deepseek-llm-7b-chat
+            tokenizer_path: checkpoints/deepscaler/deepscaler-code-32k-easy/global_step_320/actor/checkpoint
+            use_remove_padding: false
+        optim:
+            lr: 1e-05
+            lr_warmup_steps_ratio: 0
+            min_lr_ratio: null
+            total_training_steps: 2130
+            warmup_style: constant
+        ppo_epochs: 1
+        ppo_max_token_len_per_gpu: 32768
+        ppo_micro_batch_size: null
+        ppo_micro_batch_size_per_gpu: null
+        ppo_mini_batch_size: 32
+        shuffle: false
+        strategy: fsdp
+        ulysses_sequence_parallel_size: 1
+        use_dynamic_bsz: true
+data:
+    value:
+        max_prompt_length: 2048
+        max_response_length: 24576
+        prompt_key: prompt
+        return_raw_chat: false
+        return_raw_input_ids: false
+        shuffle: true
+        tokenizer: null
+        train_batch_size: 128
+        train_files: /home/huangyp_google_com/rllm/data/deepscaler_code.parquet
+        val_batch_size: 512
+        val_files: /home/huangyp_google_com/rllm/data/test_livecodebench.parquet
+reward_model:
+    value:
+        enable: false
+        forward_max_token_len_per_gpu: 32768
+        max_length: null
+        micro_batch_size: null
+        micro_batch_size_per_gpu: null
+        model:
+            external_lib: null
+            fsdp_config:
+                fsdp_size: -1
+                min_num_params: 0
+                param_offload: false
+            input_tokenizer: checkpoints/deepscaler/deepscaler-code-32k-easy/global_step_320/actor/checkpoint
+            path: ~/models/FsfairX-LLaMA3-RM-v0.1
+            use_remove_padding: false
+        reward_manager: naive
+        strategy: fsdp
+        ulysses_sequence_parallel_size: 1
+        use_dynamic_bsz: true
+trainer:
+    value:
+        critic_warmup: 0
+        default_hdfs_dir: null
+        default_local_dir: checkpoints/deepscaler/deepscaler-code-32k-easy
+        del_local_ckpt_after_load: false
+        experiment_name: deepscaler-code-32k-easy
+        logger:
+            - console
+            - wandb
+        n_gpus_per_node: 8
+        nnodes: 4
+        project_name: deepscaler
+        rejection_sample: false
+        rejection_sample_multiplier: 2
+        remove_previous_ckpt_in_save: false
+        resume_from_path: false
+        resume_mode: auto
+        save_freq: 10
+        test_freq: 10
+        total_epochs: 30
+        total_training_steps: null
+        val_before_train: false
+        val_generations_to_log_to_wandb: 0
