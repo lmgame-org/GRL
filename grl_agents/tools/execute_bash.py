@@ -7,19 +7,26 @@ from .tool_utils import safe_run_shell
 
 
 class ExecuteBashTools(ToolGroup):
+
   def __init__(self):
     super().__init__(name="bash")
 
   @tool(
-    schema={
-      "type": "object",
-      "properties": {
-        "cmd": {"type": "string", "description": "The shell command to execute."},
-        "timeout": {"type": "integer", "description": "Timeout seconds (default 120)."},
+      schema={
+          "type": "object",
+          "properties": {
+              "cmd": {
+                  "type": "string",
+                  "description": "The shell command to execute.",
+              },
+              "timeout": {
+                  "type": "integer",
+                  "description": "Timeout seconds (default 120).",
+              },
+          },
+          "required": ["cmd"],
       },
-      "required": ["cmd"],
-    },
-    description="Execute a bash command in the local shell with a timeout.",
+      description="Execute a bash command in the local shell with a timeout.",
   )
   def execute_bash(self, args: Dict[str, Any]) -> Dict[str, Any]:
     cmd: str = args.get("cmd", "")
@@ -29,5 +36,3 @@ class ExecuteBashTools(ToolGroup):
 
 
 __all__ = ["ExecuteBashTools"]
-
-

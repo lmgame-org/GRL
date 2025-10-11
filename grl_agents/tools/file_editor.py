@@ -10,6 +10,7 @@ from .tool_utils import get_workspace_root
 
 
 class FileEditorTools(ToolGroup):
+
   def __init__(self):
     super().__init__(name="editor")
     self._state_path = Path("/tmp/sokoban_editor_state.json")
@@ -40,20 +41,48 @@ class FileEditorTools(ToolGroup):
     path.write_text(content, encoding="utf-8")
 
   @tool(
-    schema={
-      "type": "object",
-      "properties": {
-        "command": {"type": "string", "enum": ["view", "create", "str_replace", "insert", "undo_edit"]},
-        "path": {"type": "string", "description": "Absolute or relative file/directory path."},
-        "file_text": {"type": "string", "description": "Required for create."},
-        "old_str": {"type": "string", "description": "Required for str_replace (must match uniquely)."},
-        "new_str": {"type": "string", "description": "Replacement string for str_replace or inserted text for insert."},
-        "insert_line": {"type": "integer", "description": "For insert: new_str inserted AFTER this 0-based line index."},
-        "view_range": {"type": "array", "items": {"type": "integer"}, "description": "[start, end]; end=-1 for EOF; 1-based indices."},
+      schema={
+          "type": "object",
+          "properties": {
+              "command": {
+                  "type": "string",
+                  "enum": [
+                      "view",
+                      "create",
+                      "str_replace",
+                      "insert",
+                      "undo_edit",
+                  ],
+              },
+              "path": {
+                  "type": "string",
+                  "description": "Absolute or relative file/directory path.",
+              },
+              "file_text": {
+                  "type": "string",
+                  "description": "Required for create.",
+              },
+              "old_str": {
+                  "type": "string",
+                  "description": "Required for str_replace (must match uniquely).",
+              },
+              "new_str": {
+                  "type": "string",
+                  "description": "Replacement string for str_replace or inserted text for insert.",
+              },
+              "insert_line": {
+                  "type": "integer",
+                  "description": "For insert: new_str inserted AFTER this 0-based line index.",
+              },
+              "view_range": {
+                  "type": "array",
+                  "items": {"type": "integer"},
+                  "description": "[start, end]; end=-1 for EOF; 1-based indices.",
+              },
+          },
+          "required": ["command", "path"],
       },
-      "required": ["command", "path"],
-    },
-    description="View or edit files: view/create/str_replace/insert/undo_edit with snippet outputs and simple validation.",
+      description="View or edit files: view/create/str_replace/insert/undo_edit with snippet outputs and simple validation.",
   )
   def file_editor(self, args: Dict[str, Any]) -> Dict[str, Any]:
     command: str = args.get("command", "")
@@ -86,7 +115,10 @@ class FileEditorTools(ToolGroup):
             fp = Path(root) / f
             if fp.suffix == ".py":
               files.append(str(fp))
-        return {"output": "\n".join(files) if files else f"<empty dir> {p}", "exit_code": "0"}
+        return {
+            "output": "\n".join(files) if files else f"<empty dir> {p}",
+            "exit_code": "0",
+        }
       if not p.exists():
         return {"output": f"The path '{p}' does not exist.", "exit_code": "-1"}
       text = self._read_text(p).expandtabs()
@@ -94,11 +126,25 @@ class FileEditorTools(ToolGroup):
       start, end = 1, len(lines)
       if view_range and len(view_range) == 2:
         start = max(1, int(view_range[0]))
-        end = len(lines) if int(view_range[1]) == -1 else min(int(view_range[1]), len(lines))
+        end = (
+            len(lines)
+            if int(view_range[1]) == -1
+            else min(int(view_range[1]), len(lines))
+        )
         if start > end:
-          return {"output": f"Invalid view_range {view_range}", "exit_code": "-1"}
-      numbered = "\n".join(f"{i:6d} {line}" for i, line in enumerate(lines[start-1:end], start))
-      return {"output": f"Here's the result of running `cat -n` on {p}:\n" + numbered, "exit_code": "0"}
+          return {
+              "output": f"Invalid view_range {view_range}",
+              "exit_code": "-1",
+          }
+      numbered = "\n".join(
+          f"{i:6d} {line}"
+          for i, line in enumerate(lines[start - 1 : end], start)
+      )
+      return {
+          "output": f"Here's the result of running `cat -n` on {p}:\n"
+          + numbered,
+          "exit_code": "0",
+      }
 
     if command == "create":
       if p.exists():
@@ -114,14 +160,23 @@ class FileEditorTools(ToolGroup):
       if not p.exists() or p.is_dir():
         return {"output": f"Invalid file: {p}", "exit_code": "-1"}
       if old_str is None:
-        return {"output": "Missing 'old_str' for str_replace.", "exit_code": "-1"}
+        return {
+            "output": "Missing 'old_str' for str_replace.",
+            "exit_code": "-1",
+        }
       text = self._read_text(p).expandtabs()
       old_str_exp = old_str.expandtabs()
       occurrences = text.count(old_str_exp)
       if occurrences == 0:
-        return {"output": f"No occurrences of provided old_str found in {p}.", "exit_code": "-1"}
+        return {
+            "output": f"No occurrences of provided old_str found in {p}.",
+            "exit_code": "-1",
+        }
       if occurrences > 1:
-        return {"output": f"Multiple occurrences found; provide more context to make it unique.", "exit_code": "-1"}
+        return {
+            "output": f"Multiple occurrences found; provide more context to make it unique.",
+            "exit_code": "-1",
+        }
       new_content = text.replace(old_str_exp, (new_str or "").expandtabs())
       history.setdefault(str(p), []).append(text)
       self._write_text(p, new_content)
@@ -136,22 +191,38 @@ class FileEditorTools(ToolGroup):
       try:
         insert_line = int(insert_line_raw)
       except Exception:
-        return {"output": "Invalid or missing 'insert_line' for insert.", "exit_code": "-1"}
+        return {
+            "output": "Invalid or missing 'insert_line' for insert.",
+            "exit_code": "-1",
+        }
       text = self._read_text(p).expandtabs()
       lines = text.split("\n")
       if insert_line < 0 or insert_line > len(lines):
-        return {"output": f"insert_line out of range [0, {len(lines)}]", "exit_code": "-1"}
-      new_lines = lines[:insert_line] + (new_str.expandtabs()).split("\n") + lines[insert_line:]
+        return {
+            "output": f"insert_line out of range [0, {len(lines)}]",
+            "exit_code": "-1",
+        }
+      new_lines = (
+          lines[:insert_line]
+          + (new_str.expandtabs()).split("\n")
+          + lines[insert_line:]
+      )
       history.setdefault(str(p), []).append(text)
       self._write_text(p, "\n".join(new_lines))
       self._save_history(history)
-      return {"output": f"Inserted into {p} at line {insert_line}.", "exit_code": "0"}
+      return {
+          "output": f"Inserted into {p} at line {insert_line}.",
+          "exit_code": "0",
+      }
 
     if command == "undo_edit":
       key = str(p)
       stack = history.get(key, [])
       if not stack:
-        return {"output": f"No previous edits found for {p}.", "exit_code": "-1"}
+        return {
+            "output": f"No previous edits found for {p}.",
+            "exit_code": "-1",
+        }
       prev = stack.pop()
       self._write_text(p, prev)
       history[key] = stack
@@ -162,5 +233,3 @@ class FileEditorTools(ToolGroup):
 
 
 __all__ = ["FileEditorTools"]
-
-

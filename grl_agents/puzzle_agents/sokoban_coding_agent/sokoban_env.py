@@ -8,6 +8,7 @@ from gym_sokoban.envs.sokoban_env import SokobanEnv as GymSokobanEnv
 
 
 class SokobanEnv(GymSokobanEnv, BaseEnv):
+
   def __init__(self, config, **kwargs):
     self.config = config
     self.GRID_LOOKUP = self.config.get(
@@ -65,7 +66,9 @@ class SokobanEnv(GymSokobanEnv, BaseEnv):
   def render(self, mode=None):
     render_mode = mode if mode is not None else self.render_mode
     if render_mode == "text":
-      room = np.where((self.room_state == 5) & (self.room_fixed == 2), 6, self.room_state)
+      room = np.where(
+          (self.room_state == 5) & (self.room_fixed == 2), 6, self.room_state
+      )
       return "\n".join(
           "".join(self.GRID_LOOKUP.get(cell, "?") for cell in row)
           for row in room.tolist()
@@ -81,5 +84,3 @@ class SokobanEnv(GymSokobanEnv, BaseEnv):
   def close(self):
     self.render_cache = None
     super(SokobanEnv, self).close()
-
-

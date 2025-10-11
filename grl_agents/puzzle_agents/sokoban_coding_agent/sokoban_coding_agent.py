@@ -20,7 +20,10 @@ class SokobanCodingAgent(BaseAgent):
     enhanced_prompt = base_prompt
     if self.env_config.get("grid_vocab"):
       symbols = [f"{k}: {v}" for k, v in self.env_config["grid_vocab"].items()]
-      enhanced_prompt += "\nThe meaning of each symbol in the state is:\n " + ", ".join(symbols)
+      enhanced_prompt += (
+          "\nThe meaning of each symbol in the state is:\n "
+          + ", ".join(symbols)
+      )
     if self.env_config.get("action_lookup"):
       actions = list(self.env_config["action_lookup"].values())
       enhanced_prompt += "\nYour available actions are:\n" + ", ".join(actions)
@@ -32,7 +35,9 @@ class SokobanCodingAgent(BaseAgent):
 
   # Simplified action parsing that accepts plain string or <answer> blocks
   def parse_llm_response(self, llm_response: str, enable_think: bool = False):
-    text = str(llm_response) if not isinstance(llm_response, str) else llm_response
+    text = (
+        str(llm_response) if not isinstance(llm_response, str) else llm_response
+    )
     m = re.search(r"<answer>(.*?)</answer>", text, flags=re.DOTALL)
     if m:
       action_content = m.group(1).strip()
@@ -40,7 +45,9 @@ class SokobanCodingAgent(BaseAgent):
       action_content = text.strip()
     # normalize separators
     normalized = action_content.replace("| |", "||").replace("|||", "||")
-    parts = [p.strip() for p in normalized.split(self.action_separator) if p.strip()]
+    parts = [
+        p.strip() for p in normalized.split(self.action_separator) if p.strip()
+    ]
     if len(parts) > self.max_actions_per_turn:
       parts = parts[: self.max_actions_per_turn]
     processed = f"<answer>{' || '.join(parts)}</answer>"
@@ -51,8 +58,12 @@ class SokobanCodingAgent(BaseAgent):
     self.raw_response_list.append(llm_raw_response)
     self.cur_turn += 1
 
-    processed_llm_response, actions = self.parse_llm_response(str(llm_raw_response), enable_think=self.enable_think)
-    self.messages.append({"role": "assistant", "content": processed_llm_response})
+    processed_llm_response, actions = self.parse_llm_response(
+        str(llm_raw_response), enable_think=self.enable_think
+    )
+    self.messages.append(
+        {"role": "assistant", "content": processed_llm_response}
+    )
 
     obs = self.env.render()
     total_reward = 0.0
@@ -60,8 +71,12 @@ class SokobanCodingAgent(BaseAgent):
     executed_actions: List[int] = []
     info: Dict[str, Any] = {}
 
-    action_lookup_reverse = {v: k for k, v in self.env_config["action_lookup"].items()}
-    action_lookup_reverse_lower = {v.lower(): k for k, v in self.env_config["action_lookup"].items()}
+    action_lookup_reverse = {
+        v: k for k, v in self.env_config["action_lookup"].items()
+    }
+    action_lookup_reverse_lower = {
+        v.lower(): k for k, v in self.env_config["action_lookup"].items()
+    }
 
     valid_actions: List[int] = []
     invalid_actions: List[str] = []
@@ -91,7 +106,11 @@ class SokobanCodingAgent(BaseAgent):
         invalid_actions.append(action_str)
         continue
 
-    if len(actions) == 0 or invalid_actions or len(valid_actions) != len(actions):
+    if (
+        len(actions) == 0
+        or invalid_actions
+        or len(valid_actions) != len(actions)
+    ):
       self.penalty += self.format_penalty
 
     for a in valid_actions:
@@ -106,8 +125,13 @@ class SokobanCodingAgent(BaseAgent):
         continue
 
     self.total_actions_consumed += len(executed_actions)
-    actions_left = max(0, self.max_actions_all_turns - self.total_actions_consumed)
-    if self.cur_turn >= self.max_turns or self.total_actions_consumed >= self.max_actions_all_turns:
+    actions_left = max(
+        0, self.max_actions_all_turns - self.total_actions_consumed
+    )
+    if (
+        self.cur_turn >= self.max_turns
+        or self.total_actions_consumed >= self.max_actions_all_turns
+    ):
       done = True
 
     self.trajectory_history.add(
@@ -122,6 +146,10 @@ class SokobanCodingAgent(BaseAgent):
         )
     )
 
-    return EnvOutput(truncated=done, terminated=done, state=obs, reward=total_reward, info=info)
-
-
+    return EnvOutput(
+        truncated=done,
+        terminated=done,
+        state=obs,
+        reward=total_reward,
+        info=info,
+    )

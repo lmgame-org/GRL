@@ -35,5 +35,3 @@ class BaseEnv:
   def close(self) -> None:
     """Clean up resources (files, sockets, etc.)."""
     pass
-
-

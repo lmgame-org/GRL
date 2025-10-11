@@ -5,7 +5,14 @@ from typing import Any, Callable, Dict, List, Optional
 
 
 class tool:
-  def __init__(self, func: Optional[Callable] = None, *, schema: Optional[dict] = None, description: Optional[str] = None):
+
+  def __init__(
+      self,
+      func: Optional[Callable] = None,
+      *,
+      schema: Optional[dict] = None,
+      description: Optional[str] = None,
+  ):
     self.func = func
     self.name = func.__name__ if func else None
     self.schema = schema or {}
@@ -23,6 +30,7 @@ class tool:
 
 
 class ToolGroup:
+
   def __init__(self, name: str):
     self.name = name
     self._registry: Dict[str, Callable[..., Any]] = {}
@@ -40,12 +48,13 @@ class ToolGroup:
           raise ValueError(f"Duplicate tool name detected: {raw.name}")
         self._registry[raw.name] = getattr(self, attr)
         schema_obj = {
-          "type": "function",
-          "function": {
-            "name": raw.name,
-            "description": raw.description or "",
-            "parameters": raw.schema or {"type": "object", "properties": {}, "required": []},
-          },
+            "type": "function",
+            "function": {
+                "name": raw.name,
+                "description": raw.description or "",
+                "parameters": raw.schema
+                or {"type": "object", "properties": {}, "required": []},
+            },
         }
         self._schemas[raw.name] = schema_obj
 
@@ -69,6 +78,7 @@ class ToolGroup:
 
 
 class ToolManager:
+
   def __init__(self):
     self._groups: List[ToolGroup] = []
     self._tool_to_group: Dict[str, ToolGroup] = {}
@@ -92,5 +102,3 @@ class ToolManager:
     if not group:
       raise ValueError(f"Unknown tool: {name}")
     return group.execute(name, arguments)
-
-
