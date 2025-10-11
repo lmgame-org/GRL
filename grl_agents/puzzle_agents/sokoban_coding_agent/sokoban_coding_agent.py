@@ -1,10 +1,13 @@
 from typing import Any, Dict, List, Tuple, Optional
 import re
 
-from grl_agents.base_agent import BaseAgent, SingleTurnTrajectory, EnvOutput
+from grl_agents.base_agent import BaseAgent
+from grl_agents.utils import SingleTurnTrajectory, EnvOutput
+from grl.agents import register_agent
 from .sokoban_env import SokobanEnv
 
 
+@register_agent("sokobanCodingAgent")
 class SokobanCodingAgent(BaseAgent):
   """
   Sokoban agent that manages environment interactions and conversation history.

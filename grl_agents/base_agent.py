@@ -3,44 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 import random
-
-
-@dataclass
-class EnvOutput:
-  truncated: bool
-  terminated: bool
-  state: Any
-  reward: float
-  info: Dict[str, Any]
-
-
-@dataclass
-class SingleTurnTrajectory:
-  state: Any
-  actions_left: int
-  actions: List[int]
-  reward: float
-  info: Dict[str, Any]
-  llm_response: str
-  llm_raw_response: str
-
-
-class MultiTurnTrajectory:
-
-  def __init__(self, max_length: int = 5):
-    from collections import deque
-
-    self._deque = deque(maxlen=max_length)
-    self.max_length = max_length
-
-  def add(self, traj: SingleTurnTrajectory) -> None:
-    self._deque.append(traj)
-
-  def get(self):
-    return self._deque
-
-  def clear(self) -> None:
-    self._deque.clear()
+from grl_agents.utils import MultiTurnTrajectory, EnvOutput
 
 
 class BaseAgent:
@@ -147,11 +110,13 @@ class BaseAgent:
     )
     match = re.search(pattern, llm_response, re.DOTALL)
     if not match:
-      return llm_response, []
-    if enable_think:
-      think_content, action_content = match.group(1), match.group(2)
+      # Treat the entire response as answer content when tags are missing
+      think_content, action_content = ("", llm_response) if not enable_think else ("", llm_response)
     else:
-      think_content, action_content = "", match.group(1)
+      if enable_think:
+        think_content, action_content = match.group(1), match.group(2)
+      else:
+        think_content, action_content = "", match.group(1)
     special_tokens = [
         "<think>",
         "</think>",
@@ -223,7 +188,7 @@ class BaseAgent:
           metrics[k] = v
 
     return {
-        "env_id": self.agent_id,
+        "agent_id": self.agent_id,
         "history": history,
         "group_id": self.group_id,
         "tag": self.tag or "baseAgent",

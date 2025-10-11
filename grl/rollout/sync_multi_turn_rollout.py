@@ -706,8 +706,8 @@ class SyncMultiTurnRollout:
     )
 
     llm_inputs.non_tensor_batch = {
-        "env_ids": np.array(
-            [env_output["env_id"] for env_output in rollout_states],
+        "agent_ids": np.array(
+            [env_output["agent_id"] for env_output in rollout_states],
             dtype=object,
         ),
         "group_ids": np.array(

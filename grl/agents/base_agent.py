@@ -234,7 +234,7 @@ class BaseAgent:
           metrics[key] = value
 
     row_dict = {
-        "env_id": self.agent_id,
+        "agent_id": self.agent_id,
         "history": history,
         "group_id": self.group_id,
         "tag": self.tag or "baseAgent",

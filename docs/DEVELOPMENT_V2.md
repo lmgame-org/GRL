@@ -2,7 +2,7 @@
 
 ### Purpose & Impact
 
-- Elegant, lite, modular training API
+- Elegant, lite, modular data-centric flow API
   - Inspired by Tinker’s elegant design; positioned between Tinker (very elegant) and VERL (less elegant).
   - Disaggregate the LLM‑RL training flow into clear blocks with stable interfaces:
     - env API
