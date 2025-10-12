@@ -36,6 +36,8 @@
 - [✅] Refactor env API and agent API to support GRPO‑style training.
     - System Design: Env Class, Agent Class, AgentGroupBuilder Class, RLDataset Class
 - [ ] Test Sokoban Coding Agent (1)
+- [ ] rethinking async and multi-thread usage
+- [ ] add execution in group agent builder? 
 - [ ] Clear and organize codebase
 
 Training Variables:

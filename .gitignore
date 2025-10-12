@@ -156,3 +156,5 @@ models/
 .env
 
 workspace/
+
+*.egg-info/

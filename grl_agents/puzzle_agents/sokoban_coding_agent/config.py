@@ -38,6 +38,7 @@ def get_sokoban_coding_agent_config():
         "agent_config": {
             "system_prompt": sokoban_system_prompt,
             "prompt": sokoban_user_prompt,
+            "workspace_path": workspace_absolute_path,
             "enable_think": False,
             "max_tokens": 10000,
             "max_turns": 1,

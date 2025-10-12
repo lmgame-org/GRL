@@ -45,52 +45,7 @@ def _parse_function_blocks(text: str):
     return []
 
 
-def _parse_function_call(block: str):
-  try:
-    m = re.search(r"<function\s*=\s*([^>]+)>", block)
-    fn = m.group(1).strip() if m else ""
-    params = {}
-    for key, val in re.findall(r"<parameter\s*=\s*([^>]+)>(.*?)</parameter>", block, flags=re.DOTALL):
-      key = key.strip()
-      raw = val.strip()
-      try:
-        params[key] = json.loads(raw)
-      except Exception:
-        params[key] = raw
-    return fn, params
-  except Exception:
-    return "", {}
-
-
-def _format_tool_observation(function_name: str, tool_out: dict) -> str:
-  output = str(tool_out.get("output", ""))
-  exit_code = str(tool_out.get("exit_code", ""))
-  if function_name in {"execute_bash", "bash"}:
-    return f"Exit code: {exit_code}\nExecution output of [{function_name}]:\n{output}"
-  return f"Execution output of [{function_name}]:\n{output}"
-
-
-def _execute_single_tool_call(agent, tm, llm_response: str):
-  blocks = _parse_function_blocks(llm_response)
-  if not blocks:
-    return False, None
-  block = blocks[0]
-  fn_name, params = _parse_function_call(block)
-  if not fn_name:
-    return False, None
-  agent.messages.append({"role": "assistant", "content": block})
-  if fn_name.lower() in {"finish", "submit"}:
-    result_text = params.get("result", "")
-    action_line = result_text.split("\n", 1)[0].split("---", 1)[0].strip()
-    env_out = agent.get_env_outputs(action_line)
-    return True, env_out
-  try:
-    tool_out = tm.execute(fn_name, params)
-  except Exception as e:
-    tool_out = {"output": f"Error executing tool {fn_name}: {e}", "exit_code": "-1"}
-  feedback = _format_tool_observation(fn_name, tool_out)
-  agent.messages.append({"role": "user", "content": feedback})
-  return False, None
+ 
 
 
 def main():
@@ -104,10 +59,7 @@ def main():
   except Exception:
     pass
 
-  # Route tools to absolute workspace directory for tool execution
-  workspace_root = repo_root / "workspace"
-  workspace_root.mkdir(parents=True, exist_ok=True)
-  os.environ.setdefault("GRL_WORKSPACE_ROOT", str(workspace_root))
+  # Agent manages its own per-agent workspace; no global override here
 
   # Import agent and config
   from grl_agents.puzzle_agents.sokoban_coding_agent.config import (
@@ -162,8 +114,8 @@ def main():
   _append_log(log_file, f"Separator: {agent.action_separator}")
   print("Max actions total:", agent.max_actions_all_turns)
   _append_log(log_file, f"Max actions total: {agent.max_actions_all_turns}")
-  print("Workspace root:", workspace_root)
-  _append_log(log_file, f"Workspace root: {workspace_root}")
+  print("Agent workspace:", getattr(agent, "workspace_path", "(none)"))
+  _append_log(log_file, f"Agent workspace: {getattr(agent, 'workspace_path', '(none)')}")
   print("Tool-call budget (max steps):", agent.agent_config.get("max_steps", 10))
   _append_log(
       log_file, f"Tool-call budget (max steps): {agent.agent_config.get('max_steps', 10)}"
@@ -185,11 +137,9 @@ def main():
     _append_log(log_file, msg)
     return
 
-  # Tool schemas from our tools package
-  from grl_agents.tools import build_default_tool_manager
-  tm = build_default_tool_manager()
-  agent.tool_manager = tm
-  tool_schemas = tm.get_schemas()
+  # Tool schemas from agent's tool manager (if available)
+  tm = getattr(agent, "tool_manager", None)
+  tool_schemas = tm.get_schemas() if tm is not None else None
 
   # LLM provider wrapper
   from grl_agents.api_serving.api_providers import chat_completion, LLMProviderError
@@ -207,12 +157,13 @@ def main():
       _append_log(log_file, f"\n=== Tool Step {turn_idx+1}.{step_calls} ===")
 
       try:
+        extra_args = {"tools": tool_schemas} if tool_schemas else None
         llm_response_raw = chat_completion(
             messages=agent.messages,
             provider=provider,
             model=model,
             temperature=1,
-            extra_args={"tools": tool_schemas},
+            extra_args=extra_args,
         )
       except (Exception, LLMProviderError) as e:
         print(f"LLM error: {e}")
@@ -241,7 +192,7 @@ def main():
         print(f"[ToolCall] step {turn_idx+1}.{step_calls}: {fn}")
 
       before_len = len(agent.get_messages())
-      finished, env_out = _execute_single_tool_call(agent, tm, llm_response)
+      finished, env_out = agent.execute_tool_call(llm_response)
       if finished:
         final_env_out = env_out
         print("\nExecuted final actions in environment.")

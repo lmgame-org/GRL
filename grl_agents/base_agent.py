@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
+import asyncio
 import random
 from grl_agents.utils import MultiTurnTrajectory, EnvOutput
 
@@ -213,6 +214,15 @@ class BaseAgent:
     return EnvOutput(
         truncated=False, terminated=False, state=obs, reward=0.0, info={}
     )
+
+  # ─────────────────── Async wrappers for agent lifecycle ───────────────────
+  async def areset(self, seed: int | None = None) -> EnvOutput:
+    """Async wrapper around reset using a thread to avoid blocking the event loop."""
+    return await asyncio.to_thread(self.reset, seed)
+
+  async def aget_final_rollout_states(self) -> Dict[str, Any]:
+    """Async wrapper for get_final_rollout_states."""
+    return await asyncio.to_thread(self.get_final_rollout_states)
 
   def close(self) -> None:
     if hasattr(self, "env") and hasattr(self.env, "close"):
