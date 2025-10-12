@@ -5,7 +5,10 @@ import sys
 REPO_ROOT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
 )
-workspace_absolute_path = os.path.join(REPO_ROOT_DIR, "cache")
+# Place per-agent coding work directories under <repo_root>/workspace
+# The per-agent subfolder pattern is handled in SokobanCodingAgent:
+#   workspace/group_{group_id}/agent_{agent_id}_{seed}
+workspace_absolute_path = os.path.join(REPO_ROOT_DIR, "workspace")
 
 # Inline configuration for sokobanCodingAgent_6_6_dim_1_box
 # Replaces YAML-based config and pulls prompts from prompts module
@@ -49,8 +52,8 @@ def get_sokoban_coding_agent_config():
             "action_separator": "||",
         },
         "env_config": {
-            "dim_room": [8, 8],
-            "num_boxes": 2,
+            "dim_room": [10, 10],
+            "num_boxes": 5,
             "max_steps": 100,
             "search_depth": 100,
             "grid_lookup": {0: "#", 1: "_", 2: "O", 3: "√", 4: "X", 5: "P", 6: "S"},

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Sequence
 
 import asyncio
 from grl_agents.agent_group_builder import AgentGroupBuilder
@@ -10,46 +10,34 @@ RLDataset
 
 Public API:
 
-- __init__(base_config, groups_per_batch=1, seeds_per_group=1, seed_start=0)
-  Configure deterministic seed generation and per-group agent counts.
+- __init__(base_configs: List[Dict], seeds: List[int])
+  Configure a dataset as a list of groups, each with its own base_config and seed.
 
 - get_batch(index)
-  Return a list of AgentGroupBuilder instances for the given index.
+  Return a list of AgentGroupBuilder instances for the given index (single group index).
 
-- async collect_group_trajectories(index)
-  Build agent groups for the given index and concurrently collect final rollout
-  states from all agents in all groups. Returns a list per group; each element
-  is a list of trajectory dicts (one per agent in the group).
+- async collect_group_trajectories(index, agent_name="sokobanCodingAgent", group_num=1)
+  Build the agent group for the given index and concurrently collect final rollout
+  states from all agents in the group. Returns a single-element list containing
+  the list of per-agent trajectory dicts for that group.
 """
 
 
 class RLDataset:
-  """Dataset helper that assembles `AgentGroupBuilder` groups and collects trajectories."""
+  """Dataset of groups, each defined by a base_config and a seed."""
 
-  def __init__(
-      self,
-      base_config: Dict[str, Any],
-      groups_per_batch: int = 1,
-      seeds_per_group: int = 1,
-      seed_start: int = 0,
-  ):
-    self.base_config = base_config
-    self.groups_per_batch = groups_per_batch
-    self.seeds_per_group = seeds_per_group
-    self.seed_start = seed_start
+  def __init__(self, base_configs: Sequence[Dict[str, Any]], seeds: Sequence[int]):
+    assert len(base_configs) == len(seeds), "base_configs and seeds must align"
+    self.base_configs = list(base_configs)
+    self.seeds = [int(s) for s in seeds]
 
-  def get_batch(self, index: int) -> List[AgentGroupBuilder]:
-    builders: List[AgentGroupBuilder] = []
-    for _ in range(self.groups_per_batch):
-      seeds = [
-          self.seed_start + index * self.seeds_per_group + i
-          for i in range(self.seeds_per_group)
-      ]
-      builders.append(AgentGroupBuilder(config=self.base_config, seeds=seeds))
-    return builders
+  def get_batch(self, index: int, agent_name: str = "sokobanCodingAgent", group_num: int = 1) -> List[AgentGroupBuilder]:
+    seed = self.seeds[index]
+    cfg = self.base_configs[index]
+    return [AgentGroupBuilder(seed=seed, config=cfg, group_num=group_num, agent_name=agent_name)]
 
-  async def collect_group_trajectories(self, index: int) -> List[List[Dict[str, Any]]]:
-    builders = self.get_batch(index)
+  async def collect_group_trajectories(self, index: int, agent_name: str = "sokobanCodingAgent", group_num: int = 1) -> List[List[Dict[str, Any]]]:
+    builders = self.get_batch(index, agent_name=agent_name, group_num=group_num)
 
     async def collect_one(builder: AgentGroupBuilder) -> List[Dict[str, Any]]:
       agents = await builder.make_agents()

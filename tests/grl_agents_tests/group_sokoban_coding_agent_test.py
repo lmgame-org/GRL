@@ -3,7 +3,7 @@ import json
 import re
 import shutil
 from pathlib import Path
-from pprint import pprint
+from concurrent.futures import ThreadPoolExecutor
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -91,23 +91,15 @@ def main():
   from grl_agents.agent_group_builder import AgentGroupBuilder
 
   base_conf = get_sokoban_coding_agent_config()
-  groups_per_batch = 1
-  seeds_per_group = 2  # can scale to 4 if desired
-  seed_start = 123
+  # Build dataset as list of groups with individual seeds
+  dataset = RLDataset(base_configs=[base_conf], seeds=[123])
 
-  dataset = RLDataset(
-      base_config=base_conf,
-      groups_per_batch=groups_per_batch,
-      seeds_per_group=seeds_per_group,
-      seed_start=seed_start,
-  )
-
-  builders = dataset.get_batch(index=0)
-  _append_log(log_file, f"=== Group test: groups={len(builders)} agents_per_group={seeds_per_group} ===")
+  builders = dataset.get_batch(index=0, group_num=2)
+  _append_log(log_file, f"=== Group test: groups={len(builders)} agents_per_group={2} ===")
 
   # LLM provider setup (same as single-agent test)
   provider = "openai"
-  model = "gpt-5"
+  model = "gpt-5-mini"
   _load_env_from_dotenv(repo_root)
   have_key = bool(os.getenv("OPENAI_API_KEY")) if provider == "openai" else True
 
@@ -118,26 +110,36 @@ def main():
   # Iterate groups
   for g_idx, builder in enumerate(builders):
     # Create agents for the group
-    agents = _run_async(builder.make_agents(parallel=True, max_workers=4))
+    agents = _run_async(builder.make_agents())
     _append_log(log_file, f"Group {g_idx}: spawned {len(agents)} agents")
 
-    # Run each agent with its own isolated workspace
-    for agent in agents:
+    def _run_agent(agent):
       agent_folder = workspace_root / f"group_{g_idx}" / f"agent_{agent.agent_id}"
       agent_folder.mkdir(parents=True, exist_ok=True)
-
-      # Point tools to agent-specific workspace
+      # Ensure all tool/file operations happen under this per-agent workspace
       os.environ["GRL_WORKSPACE_ROOT"] = str(agent_folder)
 
+      # Prepare per-agent logs in cache
+      interaction_log = cache_dir / f"group{g_idx}_agent{agent.agent_id}_interaction.log"
+      tools_log = cache_dir / f"group{g_idx}_agent{agent.agent_id}_tools.log"
+      try:
+        interaction_log.write_text("", encoding="utf-8")
+        tools_log.write_text("", encoding="utf-8")
+      except Exception:
+        pass
+
       # Ensure prompts match prompts.py explicitly
-      agent.system_prompt = sokoban_system_prompt
-      agent.prompt = sokoban_user_prompt
+      try:
+        agent.system_prompt = sokoban_system_prompt
+        agent.prompt = sokoban_user_prompt
+      except Exception:
+        pass
 
       # Reset environment with deterministic per-group seed
-      group_seed = seed_start + g_idx
+      group_seed = builders[0].seed
       env_out = agent.reset(seed=group_seed)
 
-      # Build initial user message mirroring single-agent test
+      # Build initial user message
       symbols = agent.env_config.get("grid_vocab", {})
       symbols_txt = ", ".join([f"{k}: {v}" for k, v in symbols.items()]) if symbols else ""
       actions_txt = ", ".join(agent.env_config.get("action_lookup", {}).values())
@@ -159,42 +161,23 @@ def main():
       tm = build_default_tool_manager()
       agent.tool_manager = tm
       tool_schemas = tm.get_schemas()
+      # Bind tool manager to the per-thread workspace root
+      try:
+        tm.bind_workspace(agent_folder)
+      except Exception:
+        pass
 
       _append_log(log_file, f"Agent {agent.agent_id} workspace: {agent_folder}")
       _append_log(log_file, f"Model provider={provider} model={model or '(default)'}")
+      _append_log(interaction_log, f"Init messages: {json.dumps(agent.messages) if isinstance(agent.messages, list) else str(agent.messages)}")
 
-      # If API key absent, skip calling model for this agent (but continue others)
+      # If API key absent, skip calling model for this agent but keep going
       if not have_key:
         _append_log(log_file, "OPENAI_API_KEY not set; skipping model calls for this agent.")
-        continue
+        return
 
-      # Limited single-turn tool-calling loop per agent (mirrors single-agent test)
       MAX_TURNS = getattr(agent, "max_turns", 1)
       MAX_STEPS = agent.agent_config.get("max_steps", 10)
-      finished = False
-
-      # Helper functions copied inline from single test
-      def _parse_function_blocks(text: str):
-        try:
-          return re.findall(r"<function\s*=\s*[^>]+>.*?</function>", text, flags=re.DOTALL)
-        except Exception:
-          return []
-
-      def _parse_function_call(block: str):
-        try:
-          m = re.search(r"<function\s*=\s*([^>]+)>", block)
-          fn = m.group(1).strip() if m else ""
-          params = {}
-          for key, val in re.findall(r"<parameter\s*=\s*([^>]+)>(.*?)</parameter>", block, flags=re.DOTALL):
-            key = key.strip()
-            raw = val.strip()
-            try:
-              params[key] = json.loads(raw)
-            except Exception:
-              params[key] = raw
-          return fn, params
-        except Exception:
-          return "", {}
 
       def _format_tool_observation(function_name: str, tool_out: dict) -> str:
         output = str(tool_out.get("output", ""))
@@ -203,34 +186,13 @@ def main():
           return f"Exit code: {exit_code}\nExecution output of [{function_name}]:\n{output}"
         return f"Execution output of [{function_name}]:\n{output}"
 
-      def _execute_single_tool_call(agent_local, tm_local, llm_response: str):
-        blocks = _parse_function_blocks(llm_response)
-        if not blocks:
-          return False, None
-        block = blocks[0]
-        fn_name, params = _parse_function_call(block)
-        if not fn_name:
-          return False, None
-        agent_local.messages.append({"role": "assistant", "content": block})
-        if fn_name.lower() in {"finish", "submit"}:
-          result_text = params.get("result", "")
-          action_line = result_text.split("\n", 1)[0].split("---", 1)[0].strip()
-          env_out2 = agent_local.get_env_outputs(action_line)
-          return True, env_out2
-        try:
-          tool_out = tm_local.execute(fn_name, params)
-        except Exception as e:
-          tool_out = {"output": f"Error executing tool {fn_name}: {e}", "exit_code": "-1"}
-        feedback = _format_tool_observation(fn_name, tool_out)
-        agent_local.messages.append({"role": "user", "content": feedback})
-        return False, None
-
+      # Multi-turn loop using execute_tool_call where applicable
       for turn_idx in range(MAX_TURNS):
         step_calls = 0
+        finished = False
         while step_calls < MAX_STEPS and not finished:
           step_calls += 1
           _append_log(log_file, f"[G{g_idx} A{agent.agent_id}] Tool Step {turn_idx+1}.{step_calls}")
-
           try:
             llm_response_raw = chat_completion(
                 messages=agent.messages,
@@ -241,59 +203,79 @@ def main():
             )
           except (Exception, LLMProviderError) as e:
             _append_log(log_file, f"LLM error: {e}")
+            _append_log(interaction_log, f"LLM error: {e}")
             break
 
-          llm_response = (
-              llm_response_raw if isinstance(llm_response_raw, str) else str(llm_response_raw)
-          )
+          llm_response = llm_response_raw if isinstance(llm_response_raw, str) else str(llm_response_raw)
           if not llm_response:
             _append_log(log_file, f"LLM returned empty response at step {turn_idx+1}.{step_calls}")
+            _append_log(interaction_log, f"Empty LLM response at step {turn_idx+1}.{step_calls}")
             continue
 
+          # Prefer execute_tool_call helper
+          _append_log(interaction_log, f"LLM response: {llm_response[:2000]}")
           try:
             tool_names = re.findall(r"<function\s*=\s*([^>]+)>", llm_response)
           except Exception:
             tool_names = []
-          for fn in tool_names:
-            _append_log(log_file, f"[ToolCall] G{g_idx} A{agent.agent_id} step {turn_idx+1}.{step_calls}: {fn}")
-
-          before_len = len(agent.messages)
-          finished, env_out2 = _execute_single_tool_call(agent, tm, llm_response)
-          if finished:
+          if tool_names:
+            _append_log(tools_log, f"Tool blocks detected: {', '.join(tool_names)}")
+          done, env_out_done = agent.execute_tool_call(llm_response)
+          if done:
             _append_log(log_file, f"Executed final actions for G{g_idx} A{agent.agent_id}.")
-            if env_out2 is not None:
+            _append_log(interaction_log, "Final actions executed via <function=finish>.")
+            if env_out_done is not None:
               _append_log(log_file, "=== Final observation ===")
-              _append_log(log_file, str(env_out2.state))
+              _append_log(log_file, str(env_out_done.state))
+              _append_log(interaction_log, f"Final observation: {env_out_done.state}")
             break
 
-          if llm_response and ("||" in llm_response) and ("<function=" not in llm_response) and ("<answer>" not in llm_response):
+          # Fallback: direct actions parsing when no function blocks
+          if ("<function=" not in llm_response) and ("<answer>" in llm_response or "||" in llm_response):
             env_out3 = agent.get_env_outputs(llm_response)
             _append_log(log_file, f"Executed actions from plain string for G{g_idx} A{agent.agent_id}.")
             _append_log(log_file, str(env_out3.state))
+            _append_log(interaction_log, f"Executed plain actions, obs: {env_out3.state}")
             finished = True
             break
 
-          remaining = max(0, MAX_STEPS - step_calls)
-          for m in agent.messages[before_len:]:
-            if isinstance(m, dict) and m.get("role") == "user":
-              m["content"] = f"{m.get('content', '')}\nTool calls left: {remaining}"
-
-      # Cleanup the agent-specific workspace directory after run
+      # Per-agent cleanup is deferred; group folder will be removed after all agents finish
       try:
-        shutil.rmtree(agent_folder, ignore_errors=True)
+        tm.unbind_workspace()
       except Exception:
         pass
 
+    # Run all agents in the group concurrently using threads
+    with ThreadPoolExecutor(max_workers=max(1, len(agents))) as executor:
+      list(executor.map(_run_agent, agents))
+
     # After the group run, collect trajectories for these agents
-    group_rows = _run_async(builder.generate_trajectories(agents=agents, reset=False, max_workers=4))
+    group_rows = _run_async(builder.generate_full_trajectories(agents=agents))
     _append_log(log_file, "=== Group rollouts (existing agents) ===")
     try:
       _append_log(log_file, json.dumps(group_rows))
     except Exception:
       _append_log(log_file, str(group_rows))
 
+    # Persist a single rollout file containing all agents' rollout states for this group
+    try:
+      group_rollout_file = cache_dir / f"group{g_idx}_rollouts.json"
+      group_rollout_file.write_text(json.dumps(group_rows), encoding="utf-8")
+    except Exception:
+      try:
+        group_rollout_file.write_text(str(group_rows), encoding="utf-8")
+      except Exception:
+        pass
+
+    # Cleanup: remove the entire group workspace directory now that all agents are done
+    try:
+      group_workspace = workspace_root / f"group_{g_idx}"
+      shutil.rmtree(group_workspace, ignore_errors=True)
+    except Exception:
+      pass
+
   # Also run dataset-level collection (fresh agents) and log
-  ds_rows = _run_async(dataset.generate_group_trajectories(index=0, reset=True, max_workers=4))
+  ds_rows = _run_async(dataset.collect_group_trajectories(index=0))
   _append_log(log_file, "=== Dataset rollouts (fresh agents) ===")
   try:
     _append_log(log_file, json.dumps(ds_rows))

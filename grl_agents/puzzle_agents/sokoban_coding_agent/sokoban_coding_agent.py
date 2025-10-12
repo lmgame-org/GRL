@@ -10,6 +10,11 @@ from .sokoban_env import SokobanEnv
 from grl_agents.tools import build_default_tool_manager
 
 
+"""
+SokobanCodingAgent
+"""
+
+
 @register_agent("sokobanCodingAgent")
 class SokobanCodingAgent(BaseAgent):
   """
@@ -22,7 +27,8 @@ class SokobanCodingAgent(BaseAgent):
     # Resolve per-agent workspace path from config and ensure it exists
     base_workspace = self.agent_config.get("workspace_path")
     if base_workspace:
-      per_agent = Path(str(base_workspace)).resolve() / f"{self.group_id}_{self.agent_id}"
+      base_root = Path(str(base_workspace)).resolve()
+      per_agent = base_root / f"group_{self.group_id}" / f"agent_{self.agent_id}_{self.seed}"
       try:
         per_agent.mkdir(parents=True, exist_ok=True)
       except Exception:
@@ -128,12 +134,28 @@ class SokobanCodingAgent(BaseAgent):
     executed_actions: List[int] = []
     info: Dict[str, Any] = {}
 
-    action_lookup_reverse = {
-        v: k for k, v in self.env_config["action_lookup"].items()
-    }
-    action_lookup_reverse_lower = {
-        v.lower(): k for k, v in self.env_config["action_lookup"].items()
-    }
+    # Normalize action names to 0-based indices expected by SokobanEnv/Gym (0..3)
+    # Allow config to define 1-based mapping; convert here.
+    configured = self.env_config["action_lookup"]
+    name_to_index0 = {}
+    for k, name in configured.items():
+      try:
+        k_int = int(k)
+      except Exception:
+        k_int = k
+      # Map to 0-based index
+      if k_int in (1, 2, 3, 4):
+        idx0 = k_int - 1
+      elif k_int in (0, 1, 2, 3):
+        idx0 = k_int
+      else:
+        # Fallback: attempt common ordering
+        order = {"Up": 0, "Down": 1, "Left": 2, "Right": 3}
+        idx0 = order.get(str(name), None)
+      if idx0 is not None:
+        name_to_index0[str(name)] = idx0
+        name_to_index0[str(name).lower()] = idx0
+
 
     valid_actions: List[int] = []
     invalid_actions: List[str] = []
@@ -141,22 +163,22 @@ class SokobanCodingAgent(BaseAgent):
     for action_str in actions:
       try:
         action_str_clean = action_str.strip()
-        if action_str_clean in action_lookup_reverse:
-          action = action_lookup_reverse[action_str_clean]
-          if action in self.env_config["action_lookup"]:
-            valid_actions.append(action)
-          else:
-            invalid_actions.append(action_str)
-        elif action_str_clean.lower() in action_lookup_reverse_lower:
-          action = action_lookup_reverse_lower[action_str_clean.lower()]
-          if action in self.env_config["action_lookup"]:
-            valid_actions.append(action)
-          else:
-            invalid_actions.append(action_str)
+        # Prefer name-based mapping to 0-based
+        if action_str_clean in name_to_index0:
+          idx0 = name_to_index0[action_str_clean]
+          valid_actions.append(idx0)
+        elif action_str_clean.lower() in name_to_index0:
+          idx0 = name_to_index0[action_str_clean.lower()]
+          valid_actions.append(idx0)
         else:
-          action = int(action_str_clean)
-          if action in self.env_config["action_lookup"]:
-            valid_actions.append(action)
+          # Treat as numeric; convert to 0-based if in 1..4 else expect 0..3
+          num = int(action_str_clean)
+          if num in (1, 2, 3, 4):
+            idx0 = num - 1
+          else:
+            idx0 = num
+          if idx0 in (0, 1, 2, 3):
+            valid_actions.append(idx0)
           else:
             invalid_actions.append(action_str)
       except (ValueError, KeyError, TypeError):

@@ -4,6 +4,29 @@ from typing import Any, Dict, Tuple
 import asyncio
 
 
+"""
+BaseEnv
+
+Public API (kept intentionally small and async):
+
+- reset(seed=None, **kwargs)
+  Reset the environment to an initial state and return an observation.
+- step(action)
+  Advance the environment by one timestep using `action`.
+- render(mode="text")
+  Return a human-readable representation of the current state.
+- close()
+  Clean up resources (files, sockets, etc.).
+- areset(seed=None, **kwargs)
+  Async wrapper for reset.
+- astep(action)
+  Async wrapper for step.
+- arender(mode="text")
+  Async wrapper for render.
+- aclose()
+  Async wrapper for close.
+"""
+
 class BaseEnv:
   """
   Minimal reference implementation for an environment class.

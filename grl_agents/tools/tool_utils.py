@@ -2,19 +2,44 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import List, Tuple
 
 
-# Workspace root resolution for GRL (allow env override)
-_WORKSPACE_ABS = os.environ.get(
-    "GRL_WORKSPACE_ROOT",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
-)
+# Workspace root resolution for GRL (supports per-thread override)
+_TLS = threading.local()
+
+
+def set_thread_workspace_root(path: str | Path) -> None:
+  try:
+    _TLS.workspace_root = Path(path).resolve()
+  except Exception:
+    _TLS.workspace_root = None
+
+
+def clear_thread_workspace_root() -> None:
+  if hasattr(_TLS, "workspace_root"):
+    try:
+      delattr(_TLS, "workspace_root")
+    except Exception:
+      pass
 
 
 def get_workspace_root() -> Path:
-  return Path(_WORKSPACE_ABS).resolve()
+  # 1) Thread-local override if set
+  root = getattr(_TLS, "workspace_root", None)
+  if isinstance(root, Path):
+    return root
+  # 2) Environment variable (can be set per agent, but shared across threads)
+  env_val = os.environ.get("GRL_WORKSPACE_ROOT")
+  if env_val:
+    try:
+      return Path(env_val).resolve()
+    except Exception:
+      pass
+  # 3) Fallback to repository root (two levels up from tools/)
+  return Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))).resolve()
 
 
 def safe_run_shell(cmd: str, timeout: int = 120) -> Tuple[str, str]:

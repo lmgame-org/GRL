@@ -59,7 +59,7 @@ def main():
   except Exception:
     pass
 
-  # Agent manages its own per-agent workspace; no global override here
+  # Agent manages its own per-agent workspace via config.py
 
   # Import agent and config
   from grl_agents.puzzle_agents.sokoban_coding_agent.config import (
@@ -116,6 +116,12 @@ def main():
   _append_log(log_file, f"Max actions total: {agent.max_actions_all_turns}")
   print("Agent workspace:", getattr(agent, "workspace_path", "(none)"))
   _append_log(log_file, f"Agent workspace: {getattr(agent, 'workspace_path', '(none)')}")
+  # Ensure tools operate inside the configured workspace root (from config.py)
+  try:
+    if getattr(agent, "workspace_path", None):
+      os.environ["GRL_WORKSPACE_ROOT"] = str(agent.workspace_path)
+  except Exception:
+    pass
   print("Tool-call budget (max steps):", agent.agent_config.get("max_steps", 10))
   _append_log(
       log_file, f"Tool-call budget (max steps): {agent.agent_config.get('max_steps', 10)}"
@@ -123,7 +129,7 @@ def main():
 
   # Provider/model setup
   provider = "openai"
-  model = "gpt-5"
+  model = "gpt-5-mini"
   print(f"Model provider={provider} model={model or '(default)'}")
   _append_log(log_file, f"=== Model provider={provider} model={model or '(default)'} ===")
 
@@ -139,6 +145,12 @@ def main():
 
   # Tool schemas from agent's tool manager (if available)
   tm = getattr(agent, "tool_manager", None)
+  # Bind tool execution to the per-agent workspace directory
+  if tm is not None and getattr(agent, "workspace_path", None):
+    try:
+      tm.bind_workspace(agent.workspace_path)
+    except Exception:
+      pass
   tool_schemas = tm.get_schemas() if tm is not None else None
 
   # LLM provider wrapper
@@ -251,6 +263,23 @@ def main():
     _append_log(log_file, "<metrics not serializable>")
   print("\nHistory length:", len(row.get("history", [])))
   _append_log(log_file, f"\nHistory length: {len(row.get('history', []))}")
+
+  # Persist a rollout file under cache/ mirroring the group test (single-agent group 0)
+  try:
+    group_rollout_file = cache_dir / "group0_rollouts.json"
+    group_rollout_file.write_text(json.dumps([row]), encoding="utf-8")
+  except Exception:
+    try:
+      group_rollout_file.write_text(str([row]), encoding="utf-8")
+    except Exception:
+      pass
+
+  # Unbind workspace for cleanliness
+  if tm is not None:
+    try:
+      tm.unbind_workspace()
+    except Exception:
+      pass
 
 
 def _append_log(path: Path, content: str):

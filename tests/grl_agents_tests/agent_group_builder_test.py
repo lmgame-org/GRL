@@ -17,13 +17,6 @@ def _stub_sokoban_agent_module():
       self.agent_id = agent_id
       self.seed = seed
       self.tag = tag
-      self._reset_called = False
-
-    def reset(self, seed=None):
-      self._reset_called = True
-      self.seed = seed
-      return "obs"
-
     def get_final_rollout_states(self):
       return {
           "agent_id": self.agent_id,
@@ -33,6 +26,8 @@ def _stub_sokoban_agent_module():
           "metrics": {f"mock/{self.agent_id}": 1.0},
           "penalty": 0.0,
       }
+    async def aget_final_rollout_states(self):
+      return self.get_final_rollout_states()
 
   stub_module.SokobanCodingAgent = MockAgent
   sys.modules[module_name] = stub_module
@@ -57,91 +52,45 @@ def _run_async(coro):
   return loop.run_until_complete(coro)
 
 
-def test_make_agents_non_parallel():
+def test_make_agents_simple():
   agb, MockAgent = _import_builder_with_stub()
 
-  seeds = [10, 11, 12]
+  seed = 10
+  group_num = 3
   builder = agb.AgentGroupBuilder(
-      seeds=seeds,
+      seed=seed,
+      group_num=group_num,
       config={"foo": "bar"},
       agent_cls=MockAgent,
       agent_name="mock",
   )
 
-  agents = _run_async(builder.make_agents(parallel=False))
+  agents = _run_async(builder.make_agents())
 
-  assert len(agents) == len(seeds)
-  for i, (seed, agent) in enumerate(zip(seeds, agents)):
+  assert len(agents) == group_num
+  for i, agent in enumerate(agents):
     assert isinstance(agent, MockAgent)
     assert agent.group_id == 0
     assert agent.agent_id == i
-    assert agent.seed == seed
-    assert agent.tag == f"mock-{seed}"
+    assert agent.seed == seed + i
+    assert agent.tag == f"mock-{seed + i}"
     assert agent.config == {"foo": "bar"}
 
 
-def test_make_agents_parallel_with_fake_executor():
+def test_generate_full_trajectories_no_reset():
   agb, MockAgent = _import_builder_with_stub()
 
-  class FakePool:
-    def map(self, func, iterable):
-      # behave like built-in map but return list immediately
-      return list(map(func, iterable))
-
-  class FakeExecutor:
-    def __init__(self, max_workers=None):
-      self.max_workers = max_workers
-
-    def __enter__(self):
-      return FakePool()
-
-    def __exit__(self, exc_type, exc, tb):
-      return False
-
-  # Monkeypatch the executor used inside the module
-  agb.ProcessPoolExecutor = FakeExecutor  # type: ignore[attr-defined]
-
-  seeds = [1, 2, 3, 4]
+  seed = 1
+  group_num = 4
   builder = agb.AgentGroupBuilder(
-      seeds=seeds,
+      seed=seed,
+      group_num=group_num,
       config={"alpha": 1},
       agent_cls=MockAgent,
       agent_name="mock",
   )
-
-  agents = _run_async(builder.make_agents(parallel=True, max_workers=2))
-
-  assert len(agents) == len(seeds)
-  for i, (seed, agent) in enumerate(zip(seeds, agents)):
-    assert isinstance(agent, MockAgent)
-    assert agent.group_id == 0
-    assert agent.agent_id == i
-    assert agent.seed == seed
-    assert agent.tag == f"mock-{seed}"
-    assert agent.config == {"alpha": 1}
-
-
-def test_generate_trajectories_concurrent_reset_and_collect():
-  agb, MockAgent = _import_builder_with_stub()
-
-  seeds = [101, 102, 103]
-  builder = agb.AgentGroupBuilder(
-      seeds=seeds,
-      config={"cfg": 1},
-      agent_cls=MockAgent,
-      agent_name="mock",
-  )
-
-  agents = _run_async(builder.make_agents(parallel=False))
-
-  # Collect without reset first
-  out = _run_async(builder.generate_trajectories(agents=agents, reset=False, max_workers=2))
+  agents = _run_async(builder.make_agents())
+  out = _run_async(builder.generate_full_trajectories(agents=agents))
   assert isinstance(out, list)
-  assert len(out) == len(agents)
-  # Then with reset=True to ensure seeds are applied
-  out2 = _run_async(builder.generate_trajectories(agents=agents, reset=True, max_workers=2))
-  assert len(out2) == len(agents)
-  for idx, agent in enumerate(agents):
-    assert agent._reset_called is True
-    assert agent.seed == seeds[idx]
+  assert len(out) == group_num
 

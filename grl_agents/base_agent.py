@@ -6,6 +6,30 @@ import asyncio
 import random
 from grl_agents.utils import MultiTurnTrajectory, EnvOutput
 
+"""
+BaseAgent
+
+Public API (kept intentionally small and async):
+
+- __init__(config, group_id=0, agent_id=0, seed=None, tag=None)
+  Initialize the agent with configuration and identifiers.
+- get_final_rollout_states()
+  Get the final rollout states of the agent.
+- aget_final_rollout_states()
+  Async wrapper for get_final_rollout_states.
+- reset(seed=None)
+  Reset the agent state for a new episode.
+- areset(seed=None)
+  Async wrapper for reset.
+- close()
+  Close the agent.
+- get_messages()
+  Get the messages of the agent.
+- initialize_env()
+  Initialize the environment of the agent.
+- get_env_outputs(llm_response: str)
+  Get the environment outputs of the agent.
+"""
 
 class BaseAgent:
   """Abstract base class for GRL agents with multi-turn rollout helpers."""

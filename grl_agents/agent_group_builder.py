@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Sequence, Dict, Any, Type
+from typing import List, Dict, Any, Type, Sequence
 import asyncio
 
 from grl_agents.puzzle_agents.sokoban_coding_agent.sokoban_coding_agent import SokobanCodingAgent
@@ -10,12 +10,13 @@ AgentGroupBuilder
 
 Public API (kept intentionally small and async):
 
-- __init__(seeds, config, agent_cls, agent_name)
-  Construct a builder for a single group. Each provided seed maps 1:1 to an agent.
-  The `agent_cls` is instantiated per seed with params: config, group_id=0, agent_id, seed, tag.
+- __init__(seed, config, group_num, agent_cls, agent_name)
+  Construct a builder for a single group. It will create `group_num` agents
+  with deterministic seeds: seed, seed+1, ..., seed+group_num-1.
+  Each agent is instantiated with: config, group_id=0, agent_id, seed, tag.
 
 - async make_agents()
-  Create agents for all seeds.
+  Create agents for the group using the sequential seeds.
 
 - async generate_full_trajectories(agents=None)
   Collect final rollout states from all agents in the group.
@@ -31,12 +32,14 @@ class AgentGroupBuilder:
 
   def __init__(
       self,
-      seeds: Sequence[int],
+      seed: int,
       config: Dict[str, Any],
+      group_num: int,
       agent_cls: Type[SokobanCodingAgent] = SokobanCodingAgent,
       agent_name: str = "sokobanCodingAgent",
   ) -> None:
-    self.seeds = list(seeds)
+    self.seed = int(seed)
+    self.group_num = int(group_num)
     self.config = config
     self.agent_cls = agent_cls
     self.agent_name = agent_name
@@ -45,7 +48,7 @@ class AgentGroupBuilder:
     """
     Build a group of fresh agents.
     """
-    prepared: List[int] = [int(s) for s in self.seeds]
+    prepared: List[int] = [self.seed + i for i in range(self.group_num)]
 
     agents: List[SokobanCodingAgent] = []
     for idx, seed in enumerate(prepared):

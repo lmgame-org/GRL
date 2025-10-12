@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .tool_utils import set_thread_workspace_root, clear_thread_workspace_root
 
 class tool:
 
@@ -83,6 +84,14 @@ class ToolManager:
     self._groups: List[ToolGroup] = []
     self._tool_to_group: Dict[str, ToolGroup] = {}
     self._editor_state_path = Path("/tmp/sokoban_editor_state.json")
+
+  def bind_workspace(self, path: str | Path) -> None:
+    """Bind tool execution to a given workspace path for the current thread."""
+    set_thread_workspace_root(path)
+
+  def unbind_workspace(self) -> None:
+    """Clear thread-local workspace binding."""
+    clear_thread_workspace_root()
 
   def add_group(self, group: ToolGroup) -> None:
     self._groups.append(group)
