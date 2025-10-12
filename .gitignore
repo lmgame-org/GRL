@@ -152,3 +152,7 @@ setup.log
 code_style.sh
 
 models/
+
+.env
+
+workspace/

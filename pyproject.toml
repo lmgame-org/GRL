@@ -89,6 +89,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "pydantic",
+    "litellm[proxy]",
     
     # SYSTEM & UTILITIES
     "psutil",
@@ -141,7 +142,7 @@ Homepage = "https://github.com/mignonjia/lmgame_train_reorg"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["grl*"]
+include = ["grl*", "grl_agents*"]
 exclude = ["tests*", "scripts*", "verl*", "external*"]
 
 [tool.setuptools.package-data]

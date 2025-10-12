@@ -71,6 +71,7 @@ pyink
 fastapi
 uvicorn
 pydantic
+litellm[proxy]
 
 # =============================================================================
 # SYSTEM & UTILITIES
