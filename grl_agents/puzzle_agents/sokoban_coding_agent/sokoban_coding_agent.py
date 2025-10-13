@@ -286,9 +286,14 @@ class SokobanCodingAgent(BaseAgent):
     - Otherwise, execute one tool (if available), append feedback, and return (False, None).
     - If no function block is present, return (False, None).
     """
+    # Always log the assistant raw response first to keep role parity
+    self.messages.append({"role": "assistant", "content": str(llm_response)})
+    if self.tool_trajectory is not None:
+      self.tool_trajectory.add({"role": "assistant", "content": str(llm_response)})
+
     function_blocks = self._parse_function_blocks(llm_response)
     if not function_blocks:
-      # Record a concise feedback for invalid tool-call text
+      # Record concise feedback for invalid tool-call text
       self.messages.append({"role": "user", "content": "Invalid tool-call format. Please include <function=...>...</function>."})
       if self.tool_trajectory is not None:
         self.tool_trajectory.add({"role": "user", "content": "Invalid tool-call format. Please include <function=...>...</function>."})
@@ -301,12 +306,6 @@ class SokobanCodingAgent(BaseAgent):
       if self.tool_trajectory is not None:
         self.tool_trajectory.add({"role": "user", "content": "Malformed function block. Please specify a function name."})
       return False, None
-
-    # Log assistant raw response (track full LLM output)
-    self.messages.append({"role": "assistant", "content": str(llm_response)})
-    if self.tool_trajectory is not None:
-      self.tool_trajectory.add({"role": "assistant", "content": str(llm_response)})
-
     if fn_name.lower() in {"finish", "submit"}:
       result_text = params.get("result", "")
       action_line = result_text.split("\n", 1)[0].split("---", 1)[0].strip()

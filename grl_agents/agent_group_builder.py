@@ -60,7 +60,7 @@ class AgentGroupBuilder:
           group_id=self.group_id,
           agent_id=self.agent_id_offset + idx,
           seed=self.seed,
-          tag=f"{self.agent_name}-{self.seed}",
+          tag=self.agent_name,
       )
       agents.append(agent)
     return agents

@@ -35,10 +35,11 @@
 #### 1.2 System Design of Agent and Envs
 - [✅] Refactor env API and agent API to support GRPO‑style training.
     - System Design: Env Class, Agent Class, AgentGroupBuilder Class, RLDataset Class
-- [ ] Test Sokoban Coding Agent (1)
-- [ ] optimize codes in async and multi-thread usage
-- [ ] in the rollout, we should have a torch rollout and jax rollout
+- [✅] Test Sokoban Coding Agent (1)
+- [✅] optimize codes in async and multi-thread usage
+- [ ] in the rollout, we should have a torch rollout and jax rollout, verl_agent_trainer, tunix_agent_trainer, verl_train.py and tunix_train.py
 - [ ] Clear and organize codebase (sky rl layout? grl_train and grl_agents)
+- [ ] Rllm async agent trainer
 
 Training Variables:
 1) sequence length

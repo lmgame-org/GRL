@@ -1,3 +1,16 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
@@ -9,14 +22,146 @@ import hydra
 import ray
 from omegaconf import OmegaConf
 
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+# ─────────────────── MODIFICATION: Import AgentTrainer (Torch-based) instead of RayPPOTrainer ───────────────────
+from trainer.verl_agent_trainer import AgentTrainer
+# ─────────────────── END MODIFICATION ───────────────────
 from verl.trainer.ppo.reward import load_reward_manager
+
+
+# ─────────────────── MODIFICATION: DummyRewardManager replaces load_reward_manager ───────────────────
+class DummyRewardManager:
+  """The reward manager."""
+
+  def __init__(self, tokenizer, num_examine, compute_score=None) -> None:
+    self.tokenizer = tokenizer
+    self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
+    self.compute_score = compute_score
+
+  def __call__(self, data, return_dict=False):
+    """We will expand this function gradually based on the available datasets"""
+    import torch
+    import numpy as np
+
+    # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
+    if "rm_scores" in data.batch.keys():
+      reward_tensor = data.batch["rm_scores"]
+    else:
+      reward_tensor = torch.zeros_like(
+          data.batch["responses"], dtype=torch.float32
+      )
+
+      all_scores = []
+      already_print_data_sources = {}
+
+      for i in range(len(data)):
+        data_item = data[i]  # DataProtoItem
+
+        prompt_ids = (
+            data_item.batch["prompts"]
+            if "prompts" in data_item.batch
+            else data_item.batch["input_ids"]
+        )
+        prompt_length = (
+            prompt_ids.shape[-1]
+            if "prompts" in data_item.batch
+            else data_item.batch["input_ids"].shape[-1]
+            - data_item.batch["responses"].shape[-1]
+        )
+
+        valid_prompt_length = data_item.batch["attention_mask"][
+            :prompt_length
+        ].sum()
+        valid_prompt_ids = (
+            prompt_ids[-valid_prompt_length:]
+            if "prompts" in data_item.batch
+            else data_item.batch["input_ids"][-valid_prompt_length:]
+        )
+
+        response_ids = data_item.batch["responses"]
+        valid_response_length = (
+            data_item.batch["attention_mask"][prompt_length:].sum()
+            if "prompts" in data_item.batch
+            else data_item.batch["attention_mask"].sum() - valid_prompt_length
+        )
+        valid_response_ids = response_ids[:valid_response_length]
+
+        # decode
+        sequences = torch.cat((valid_prompt_ids, valid_response_ids))
+        sequences_str = self.tokenizer.decode(sequences)
+
+        # Get score from non_tensor_batch if available
+        if (
+            hasattr(data_item, "non_tensor_batch")
+            and data_item.non_tensor_batch is not None
+        ):
+          score = data_item.non_tensor_batch.get("reward", 0.0)
+        else:
+          score = 0.0
+
+        score = float(score)
+
+        reward_tensor[i, valid_response_length - 1] = score
+        all_scores.append(score)
+
+        # Get data_source from data_item if available, otherwise use a default value
+        data_source = (
+            data_item.non_tensor_batch.get("data_source", "unknown")
+            if hasattr(data_item, "non_tensor_batch")
+            and data_item.non_tensor_batch is not None
+            else "unknown"
+        )
+
+        if data_source not in already_print_data_sources:
+          already_print_data_sources[data_source] = 0
+
+        if already_print_data_sources[data_source] < self.num_examine:
+          already_print_data_sources[data_source] += 1
+
+    # Handle return_dict parameter
+    if return_dict:
+      return {
+          "reward_tensor": reward_tensor,
+          "reward_extra_info": {},  # Empty dict for now, can be expanded later
+      }
+    else:
+      return reward_tensor
+
+
+# ─────────────────── END MODIFICATION ───────────────────
+
+
+# ─────────────────── MODIFICATION: Check config ───────────────────
+def check_config(config):
+  if len(config.rollout.validation_agent_group_num) != len(
+      config.rollout.validation_agent_group_size
+  ):
+    raise ValueError(
+        "validation_agent_group_num and validation_agent_group_size must have the same length"
+    )
+  if len(config.rollout.validation) != len(
+      config.rollout.validation_agent_group_num
+  ):
+    raise ValueError(
+        "validation and validation_agent_group_num must have the same length"
+    )
+  if len(config.rollout.agent_group_num) != len(
+      config.rollout.agent_group_size
+  ):
+    raise ValueError(
+        "agent_group_num and agent_group_size must have the same length"
+    )
+  if len(config.rollout.training) != len(config.rollout.agent_group_num):
+    raise ValueError("training and agent_group_num must have the same length")
+
+
+# ─────────────────── END MODIFICATION ───────────────────
 
 
 @hydra.main(
     config_path="../configs", config_name="grpo_base", version_base=None
 )
 def main(config):
+  check_config(config)
   run_ppo(config)
 
 
@@ -40,8 +185,9 @@ def run_ppo(config) -> None:
         num_cpus=config.ray_init.num_cpus,
     )
 
-  # Create a remote instance of the TaskRunner class, and
-  # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
+  # Create a remote instance of the TaskRunner class with configurable CPU slots,
+  # then execute the `run` method remotely
+  taskrunner_num_cpus = config.trainer.get("taskrunner_num_cpus", 1)
   if (
       OmegaConf.select(config.trainer, "profile_steps") is not None
       and len(OmegaConf.select(config.trainer, "profile_steps")) > 0
@@ -49,9 +195,11 @@ def run_ppo(config) -> None:
     nsight_options = OmegaConf.to_container(
         config.trainer.controller_nsight_options
     )
-    runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
+    runner = TaskRunner.options(
+        num_cpus=taskrunner_num_cpus, runtime_env={"nsight": nsight_options}
+    ).remote()
   else:
-    runner = TaskRunner.remote()
+    runner = TaskRunner.options(num_cpus=taskrunner_num_cpus).remote()
   ray.get(runner.run.remote(config))
 
   # [Optional] get the path of the timeline trace file from the configuration, default to None
@@ -177,36 +325,28 @@ class TaskRunner:
       role_worker_mapping[Role.RefPolicy] = ray.remote(ActorRolloutRefWorker)
       mapping[Role.RefPolicy] = global_pool_id
 
-    # Load the reward manager for training and validation.
-    reward_fn = load_reward_manager(
-        config,
-        tokenizer,
-        num_examine=0,
-        **config.reward_model.get("reward_kwargs", {}),
+    # ─────────────────── MODIFICATION: Use DummyRewardManager instead of load_reward_manager ───────────────────
+    reward_fn = DummyRewardManager(
+        tokenizer=tokenizer, num_examine=0, compute_score=None
     )
-    val_reward_fn = load_reward_manager(
-        config,
-        tokenizer,
-        num_examine=1,
-        **config.reward_model.get("reward_kwargs", {}),
+    val_reward_fn = DummyRewardManager(
+        tokenizer=tokenizer, num_examine=1, compute_score=None
     )
+    # ─────────────────── END MODIFICATION ───────────────────
     resource_pool_manager = ResourcePoolManager(
         resource_pool_spec=resource_pool_spec, mapping=mapping
     )
 
     from verl.utils.dataset.rl_dataset import collate_fn
 
-    # Create training and validation datasets.
-    train_dataset = create_rl_dataset(
-        config.data.train_files, config.data, tokenizer, processor
-    )
-    val_dataset = create_rl_dataset(
-        config.data.val_files, config.data, tokenizer, processor
-    )
-    train_sampler = create_rl_sampler(config.data, train_dataset)
+    # ─────────────────── MODIFICATION: Remove dataset preparation - using None instead of create_rl_dataset ───────────────────
+    train_dataset = None
+    val_dataset = None
+    train_sampler = None
+    # ─────────────────── END MODIFICATION ───────────────────
 
-    # Initialize the PPO trainer.
-    trainer = RayPPOTrainer(
+    # ─────────────────── MODIFICATION: Initialize AgentTrainer instead of RayPPOTrainer ───────────────────
+    trainer = AgentTrainer(
         config=config,
         tokenizer=tokenizer,
         processor=processor,
@@ -215,93 +355,23 @@ class TaskRunner:
         ray_worker_group_cls=ray_worker_group_cls,
         reward_fn=reward_fn,
         val_reward_fn=val_reward_fn,
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
+        train_dataset=None,  # Changed from train_dataset
+        val_dataset=None,  # Changed from val_dataset
         collate_fn=collate_fn,
-        train_sampler=train_sampler,
+        train_sampler=None,  # Changed from train_sampler
         device_name=config.trainer.device,
     )
+    # ─────────────────── END MODIFICATION ───────────────────
     # Initialize the workers of the trainer.
     trainer.init_workers()
     # Start the training process.
     trainer.fit()
 
 
-def create_rl_dataset(data_paths, data_config, tokenizer, processor):
-  """Create a dataset.
-
-  Arguments:
-      data_paths: List of paths to data files.
-      data_config: The data config.
-      tokenizer (Tokenizer): The tokenizer.
-      processor (Processor): The processor.
-
-  Returns:
-      dataset (Dataset): The dataset.
-  """
-  from torch.utils.data import Dataset
-
-  from verl.utils.dataset.rl_dataset import RLHFDataset
-
-  # Check if a custom dataset class is specified in the data configuration
-  # and if the path to the custom class is provided
-  if (
-      "custom_cls" in data_config
-      and data_config.custom_cls.get("path", None) is not None
-  ):
-    from verl.utils.import_utils import load_extern_type
-
-    # Dynamically load the custom dataset class
-    dataset_cls = load_extern_type(
-        data_config.custom_cls.path, data_config.custom_cls.name
-    )
-    # Verify that the custom dataset class inherits from torch.utils.data.Dataset
-    if not issubclass(dataset_cls, Dataset):
-      raise TypeError(
-          f"The custom dataset class '{data_config.custom_cls.name}' from '{data_config.custom_cls.path}' must inherit from torch.utils.data.Dataset"
-      )
-  else:
-    # Use the default RLHFDataset class if no custom class is specified
-    dataset_cls = RLHFDataset
-  print(f"Using dataset class: {dataset_cls.__name__}")
-
-  # Instantiate the dataset using the determined dataset class
-  dataset = dataset_cls(
-      data_files=data_paths,
-      tokenizer=tokenizer,
-      processor=processor,
-      config=data_config,
-  )
-
-  return dataset
-
-
-def create_rl_sampler(data_config, dataset):
-  """Create a sampler for the dataset.
-
-  Arguments:
-      data_config: The data config.
-      dataset (Dataset): The dataset.
-
-  Returns:
-      sampler (Sampler): The sampler.
-  """
-  import torch
-  from torch.utils.data import RandomSampler, SequentialSampler
-
-  # Use a sampler to facilitate checkpoint resumption.
-  # If shuffling is enabled in the data configuration, create a random sampler.
-  if data_config.shuffle:
-    train_dataloader_generator = torch.Generator()
-    train_dataloader_generator.manual_seed(data_config.get("seed", 1))
-    sampler = RandomSampler(
-        data_source=dataset, generator=train_dataloader_generator
-    )
-  else:
-    # If shuffling is disabled, use a sequential sampler to iterate through the dataset in order.
-    sampler = SequentialSampler(data_source=dataset)
-
-  return sampler
+# ─────────────────── MODIFICATION: Remove dataset creation functions - using None datasets instead ───────────────────
+# def create_rl_dataset(...) - REMOVED
+# def create_rl_sampler(...) - REMOVED
+# ─────────────────── END MODIFICATION ───────────────────
 
 
 if __name__ == "__main__":

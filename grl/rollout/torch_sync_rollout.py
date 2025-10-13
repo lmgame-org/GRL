@@ -15,6 +15,9 @@ from typing import List, Dict, Any
 
 import numpy as np
 import torch
+from tensordict import TensorDict
+
+from verl import DataProto
 
 
 from grl.rollout.utils import RolloutBatch
@@ -86,11 +89,16 @@ class TorchSyncRollout:
           self.cfg.rollout, "training", ["simpleSokobanAgent"]
       )
 
-    # Normalize to a list for downstream logic
-    if not isinstance(self.agent_names, (list, tuple)):
-      self.agent_names = [self.agent_names]
-    else:
+    # Normalize to a list for downstream logic (handle OmegaConf ListConfig)
+    try:
+      from omegaconf import ListConfig
+      is_list_like = isinstance(self.agent_names, (list, tuple, ListConfig))
+    except Exception:
+      is_list_like = isinstance(self.agent_names, (list, tuple))
+    if is_list_like:
       self.agent_names = list(self.agent_names)
+    else:
+      self.agent_names = [self.agent_names]
 
     # Build per-type configs and basic limits for convenience
     self.agent_config_list = []
@@ -233,8 +241,13 @@ class TorchSyncRollout:
       agent = self.agents[idx]
 
       if not reply:
-        # Empty/invalid reply: add simple feedback and continue
-        agent.messages.append({"role": "user", "content": "Empty model reply. Provide a valid tool call or <answer>."})
+        # Route empty reply through tool-call handler to preserve assistant→user parity
+        try:
+          agent.execute_tool_call(reply)
+        except Exception:
+          # Fallback minimal parity maintenance
+          agent.messages.append({"role": "assistant", "content": str(reply)})
+          agent.messages.append({"role": "user", "content": "Empty model reply. Provide a valid tool call or <answer>."})
         continue
 
       # Increment step count; enforce max tool steps only after a non-empty reply
@@ -343,6 +356,60 @@ class TorchSyncRollout:
       lm_outputs = self.actor_wg.generate_sequences(lm_inputs)
 
     return lm_outputs
+
+  def _build_dataproto_from_prompts(self, prompts: List[str]) -> DataProto:
+    """
+    Convert a list of prompt strings into a DataProto compatible with
+    the actor worker group's generate_sequences.
+    """
+    # Ensure left padding for autoregressive decoding
+    try:
+      original_padding_side = getattr(self.tokenizer, "padding_side", "right")
+      self.tokenizer.padding_side = "left"
+    except Exception:
+      original_padding_side = None
+
+    try:
+      inputs = self.tokenizer(
+          prompts,
+          return_tensors="pt",
+          padding=True,
+          truncation=True,
+          max_length=int(getattr(self.cfg, "max_prompt_length", 4096)),
+      )
+    finally:
+      # Restore tokenizer padding_side if available
+      try:
+        if original_padding_side is not None:
+          self.tokenizer.padding_side = original_padding_side
+      except Exception:
+        pass
+
+    input_ids: torch.Tensor = inputs.input_ids
+    attention_mask: torch.Tensor = inputs.attention_mask
+
+    # Position ids consistent with verl
+    from verl.utils.model import compute_position_id_with_mask
+
+    position_ids = compute_position_id_with_mask(attention_mask)
+
+    dp = DataProto()
+    dp.batch = TensorDict(
+        {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+        },
+        batch_size=input_ids.shape[0],
+    )
+
+    dp.meta_info = {
+        "eos_token_id": getattr(self.tokenizer, "eos_token_id", None),
+        "pad_token_id": getattr(self.tokenizer, "pad_token_id", None),
+        # Generation knobs can be extended/read by workers if needed
+        "recompute_log_prob": False,
+    }
+    return dp
 
 
   def rollout(self):
@@ -475,9 +542,26 @@ class TorchSyncRollout:
     llm_input_texts: List[str] = []
     messages_list: List[List[Dict[str, Any]]] = []
 
-    for agent in self.agents:
+    for agent_idx, agent in enumerate(self.agents):
       messages = agent.get_messages()
-      assert all(msg["role"] == "assistant" for msg in messages[2::2])
+      bad_indices = [i for i, msg in enumerate(messages[2::2], start=2) if msg.get("role") != "assistant"]
+      if bad_indices:
+        # Debug output to visualize what happened before raising
+        try:
+          print(f"[DEBUG] build_rollout_batch: Agent {agent_idx} has non-assistant roles at positions {bad_indices}")
+          roles_seq = [m.get("role") for m in messages]
+          print(f"[DEBUG] build_rollout_batch: roles sequence = {roles_seq}")
+          for k, m in enumerate(messages):
+            content_preview = str(m.get("content"))
+            content_preview = content_preview if content_preview is not None else ""
+            if len(content_preview) > 200:
+              content_preview = content_preview[:200] + "..."
+            print(f"[DEBUG] build_rollout_batch: msg[{k}] role={m.get('role')} | content={content_preview}")
+        except Exception:
+          pass
+        raise AssertionError(
+            f"Expected 'assistant' at even turns starting from index 2. Got {[messages[i].get('role') for i in bad_indices]} at positions {bad_indices} for agent {agent_idx}."
+        )
       messages_list.append(messages)
       try:
         prompt_text = self.tokenizer.apply_chat_template(
@@ -541,6 +625,119 @@ class TorchSyncRollout:
         },
         meta_info={"metrics": metrics},
     )
+
+  def build_ppo_batch(self, rollout_states: List[Dict]) -> DataProto:
+    """
+    Build a DataProto for PPO training from final rollout states.
+    Mirrors SyncMultiTurnRollout.build_ppo_batch for compatibility.
+    """
+    llm_input_texts: List[str] = []
+    messages_list: List[List[Dict[str, Any]]] = []
+
+    for agent_idx, agent in enumerate(self.agents):
+      messages = agent.get_messages()
+      bad_indices = [i for i, msg in enumerate(messages[2::2], start=2) if msg.get("role") != "assistant"]
+      if bad_indices:
+        # Debug output to visualize what happened before raising
+        try:
+          print(f"[DEBUG] build_ppo_batch: Agent {agent_idx} has non-assistant roles at positions {bad_indices}")
+          roles_seq = [m.get("role") for m in messages]
+          print(f"[DEBUG] build_ppo_batch: roles sequence = {roles_seq}")
+          for k, m in enumerate(messages):
+            content_preview = str(m.get("content"))
+            content_preview = content_preview if content_preview is not None else ""
+            if len(content_preview) > 200:
+              content_preview = content_preview[:200] + "..."
+            print(f"[DEBUG] build_ppo_batch: msg[{k}] role={m.get('role')} | content={content_preview}")
+        except Exception:
+          pass
+        raise AssertionError(
+            f"Expected 'assistant' at even turns starting from index 2. Got {[messages[i].get('role') for i in bad_indices]} at positions {bad_indices} for agent {agent_idx}."
+        )
+      messages_list.append(messages)
+      try:
+        prompt_text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
+      except Exception:
+        prompt_text = "System error in chat template"
+      llm_input_texts.append(prompt_text)
+
+    # Tokenize batched transcripts
+    try:
+      original_padding_side = getattr(self.tokenizer, "padding_side", "right")
+      self.tokenizer.padding_side = "left"
+    except Exception:
+      original_padding_side = None
+    try:
+      inputs = self.tokenizer(
+          llm_input_texts,
+          return_tensors="pt",
+          padding=True,
+          truncation=False,
+      )
+    finally:
+      try:
+        if original_padding_side is not None:
+          self.tokenizer.padding_side = original_padding_side
+      except Exception:
+        pass
+
+    input_ids: torch.Tensor = inputs.input_ids
+    attention_mask: torch.Tensor = inputs.attention_mask
+    position_ids: torch.Tensor = attention_mask.cumsum(dim=-1)
+
+    scores = [
+        [i["reward"] for i in env_output["history"]]
+        for env_output in rollout_states
+    ]
+
+    loss_mask, score_tensor, response_mask = self.get_masks_and_scores(
+        input_ids, scores, use_turn_scores=self.cfg.rollout.use_turn_scores
+    )
+    normalized_score_tensor = self._normalize_score_tensor(
+        score_tensor, rollout_states
+    )
+    response_length = response_mask.sum(dim=-1).float().mean().item()
+
+    llm_inputs = DataProto()
+    llm_inputs.batch = TensorDict(
+        {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+            "responses": input_ids[:, 1:],
+            "loss_mask": loss_mask,
+            "rm_scores": normalized_score_tensor,
+        },
+        batch_size=input_ids.shape[0],
+    )
+
+    llm_inputs.non_tensor_batch = {
+        "agent_ids": np.array(
+            [env_output["agent_id"] for env_output in rollout_states],
+            dtype=object,
+        ),
+        "group_ids": np.array(
+            [env_output["group_id"] for env_output in rollout_states],
+            dtype=object,
+        ),
+        "messages_list": np.array(messages_list, dtype=object),
+    }
+
+    metrics: Dict[str, float] = {}
+    n_agents_map = dict(zip(self.agent_names, self.n_agents_list))
+    for env_output in rollout_states:
+      for key, value in env_output["metrics"].items():
+        metrics.setdefault(key, []).append(value)
+    metrics = {
+        key: float(np.sum(value) / n_agents_map[key.split("/")[0]])
+        for key, value in metrics.items()
+    }
+    metrics["response_length"] = response_length
+    llm_inputs.meta_info = {"metrics": metrics}
+
+    return llm_inputs
 
   # ─────────────────── RESET / CLOSE ───────────────────
   def _reset_batch_agents(self, seed=None):

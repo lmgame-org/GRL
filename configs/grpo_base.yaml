@@ -1,137 +1,110 @@
-# Base configuration for GRPO training
+# Base configuration for PPO training with Sokoban agents
 # This configuration follows the hydra structure with defaults and overrides
 # ------ Hydra Config ------
 
 defaults:
+  - coding_agents
   - ppo_trainer
   - _self_
 
 system:
   CUDA_VISIBLE_DEVICES: 0
 
+# ------ Rollout Configuration ------
+rollout:
+  agent_group_num: [2]
+  agent_group_size: [2] # number of agents = agent_group_num * agent_group_size
+  validation_agent_group_num: [8]
+  validation_agent_group_size: [1]
+  training: [sokobanCodingAgent]
+  validation: [sokobanCodingAgent]
+  validation_seed: 123
+  truncation: left  # truncate from left (oldest tokens) to keep recent context
+  use_turn_scores: False  # for GAE computation
+  rollout_filter_ratio: 0.25  # filter ratio for rollout selection
+  rollout_filter_type: std  # std or std_rev for filtering criteria
+  reward_normalization:
+    grouping: "state" # state / batch / inductive
+    method: "identity" # asym_clip / identity / mean_std
+  # Lightweight CPU parallelism for prompt building and env stepping
+  # 0 or unset -> auto = min(32, os.cpu_count())
+  num_prompt_threads: 0
+  num_env_threads: 0
+  # Show tqdm progress bars for concurrent steps
+  show_tqdm: False
+
 # ------ Training Parameters ------
 train_batch_size: 128
-micro_batch_size_per_gpu: null
-ppo_micro_batch_size_per_gpu: null
+micro_batch_size_per_gpu: 4
+ppo_micro_batch_size_per_gpu: 4
 ppo_mini_batch_size: 32
-total_training_steps: null
-n_gpus_per_node: 8
-nnodes: 4
-max_prompt_length: 2048
-max_response_length: 24576
+total_training_steps: 50
+n_gpus_per_node: 1
+max_prompt_length: 4096
+max_response_length: 400
 test_freq: 10
-save_freq: 10
-gpu_memory_utilization: 0.85
-model_path: checkpoints/deepscaler/deepscaler-code-32k-easy/global_step_320/actor/checkpoint
-project_name: deepscaler
-experiment_name: deepscaler-code-32k-easy
-resume_mode: auto
+save_freq: -1
+gpu_memory_utilization: 0.5
+model_path: Qwen/Qwen2.5-0.5B-Instruct
+project_name: lmgame_train
+experiment_name: sokoban_train_example
+resume_mode: disable
 
-# ------ Actor/Ref/Rollout Override Config ------
+# ------ PPO_trainer Override Config ------
 actor_rollout_ref:
   model:
     path: ${model_path}
-    enable_gradient_checkpointing: true
-    use_remove_padding: true
   actor:
-    ppo_mini_batch_size: ${ppo_mini_batch_size}
-    micro_batch_size_per_gpu: ${micro_batch_size_per_gpu}
-    ppo_micro_batch_size_per_gpu: ${ppo_micro_batch_size_per_gpu}
+    ppo_mini_batch_size: ${ppo_mini_batch_size}  # by default, ppo_mini_batch_size = train_batch_size / 4
+    micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
+    ppo_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
     use_ref: True
-    entropy_coeff: 0.0015
+    entropy_coeff: 0.001
     use_kl_loss: False
-    kl_loss_coef: 0.0001
-    kl_loss_type: low_var_kl
+    kl_loss_coef: 0.001
+    kl_loss_type: kl
     clip_ratio_low: 0.2
-    clip_ratio_high: 0.2
-    grad_clip: 1
-    ppo_epochs: 1
-    shuffle: false
-    strategy: fsdp
-    ulysses_sequence_parallel_size: 1
+    clip_ratio_high: 0.28
     optim:
-      lr: 5e-07
-      lr_warmup_steps_ratio: 0
-      min_lr_ratio: null
-      total_training_steps: 2130
-      warmup_style: constant
+      betas: [0.9, 0.999]
   ref:
-    log_prob_max_token_len_per_gpu: 27000
-    log_prob_micro_batch_size_per_gpu: ${ppo_micro_batch_size_per_gpu}
-    log_prob_use_dynamic_bsz: true
-    ulysses_sequence_parallel_size: 1
+    log_prob_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
   rollout:
-    name: vllm
-    async_engine: true
-    compute_reward: true
-    disable_log_stats: true
-    do_sample: true
-    dtype: bfloat16
-    enable_chunked_prefill: true
-    enforce_eager: false
-    free_cache_engine: false
-    gpu_memory_utilization: ${gpu_memory_utilization}
-    ignore_eos: false
-    load_format: dummy_dtensor
-    log_prob_max_token_len_per_gpu: 27000
-    log_prob_micro_batch_size_per_gpu: ${ppo_micro_batch_size_per_gpu}
-    log_prob_use_dynamic_bsz: true
-    max_model_len: null
-    max_num_batched_tokens: 8192
-    max_num_seqs: 1024
+    log_prob_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
     tensor_model_parallel_size: 1
-    prompt_length: ${max_prompt_length}
-    response_length: ${max_response_length}
-    temperature: 0.6
-    top_k: -1
-    top_p: 1
-    vllm_log_prob: true
-    n: 8
-    n_val: 1
+    max_model_len: 8192
+    prompt_length: 1 # useless. Just put it here
+    response_length: ${max_response_length} # single-turn response length
+    gpu_memory_utilization: ${gpu_memory_utilization}
+    max_num_batched_tokens: 20000 # set only when enable_chunked_prefill is true
+    temperature: 1
+    rollout_filter_ratio: 0.25
+    rollout_filter_type: std # max_mean or std
+    enforce_eager: True
+    free_cache_engine: True
     val_kwargs:
       do_sample: False
-      temperature: 0.6
+      temperature: 0
 
 critic:
-  ppo_mini_batch_size: ${ppo_mini_batch_size}
-  ppo_micro_batch_size_per_gpu: ${ppo_micro_batch_size_per_gpu}
-  forward_max_token_len_per_gpu: 32768
-  ppo_max_token_len_per_gpu: 32768
-  grad_clip: 1
-  ppo_epochs: 1
-  shuffle: false
-  strategy: fsdp
-  ulysses_sequence_parallel_size: 1
+  ppo_mini_batch_size: ${ppo_mini_batch_size} # by default, ppo_mini_batch_size = train_batch_size / 4
+  ppo_micro_batch_size_per_gpu: ${micro_batch_size_per_gpu} # following micro_batch_size_per_gpu
   model:
-    enable_gradient_checkpointing: true
-    path: ~/models/deepseek-llm-7b-chat
-    tokenizer_path: checkpoints/deepscaler/deepscaler-code-32k-easy/global_step_320/actor/checkpoint
-    use_remove_padding: false
+    path: ${model_path}
   optim:
-    lr: 1e-05
-    lr_warmup_steps_ratio: 0
-    min_lr_ratio: null
-    total_training_steps: 2130
-    warmup_style: constant
+    betas: [0.9, 0.999]
 
 data:
   max_prompt_length: ${max_prompt_length}
   max_response_length: ${max_response_length}
   train_batch_size: ${train_batch_size}
-  prompt_key: prompt
-  return_raw_chat: false
-  return_raw_input_ids: false
-  shuffle: true
-  tokenizer: null
-  train_files: /home/huangyp_google_com/rllm/data/deepscaler_code.parquet
-  val_batch_size: 512
-  val_files: /home/huangyp_google_com/rllm/data/test_livecodebench.parquet
 
 algorithm:
   gamma: 1.0
   lam: 1.0
-  adv_estimator: grpo
-  kl_penalty: kl
+  adv_estimator: gae
+  kl_penalty: kl  # how to estimate kl divergence
+  use_kl_in_reward: True
   kl_ctrl:
     type: fixed
     kl_coef: 0.001
@@ -140,24 +113,14 @@ trainer:
   project_name: ${project_name}
   experiment_name: ${experiment_name}
   total_training_steps: ${total_training_steps}
-  total_epochs: 30
-  val_before_train: false
+  validation_steps: 1 # validation instances = validation_steps * val_env_groups * group_size
+  val_before_train: True
   n_gpus_per_node: ${n_gpus_per_node}
-  nnodes: ${nnodes}
   test_freq: ${test_freq}
-  logger: [ 'console', 'wandb' ]
+  logger: [ 'console', 'wandb' ] # 
   val_only: False
   save_freq: ${save_freq}
   resume_mode: ${resume_mode}
-  default_hdfs_dir: null
-  default_local_dir: checkpoints/deepscaler/deepscaler-code-32k-easy
-  del_local_ckpt_after_load: false
-  rejection_sample: false
-  rejection_sample_multiplier: 2
-  remove_previous_ckpt_in_save: false
-  resume_from_path: false
-  val_generations_to_log_to_wandb: 0
   # CPU slots reserved for the main TaskRunner actor in Ray.
+  # Increase if you use many threads in rollout to avoid CPU starvation.
   taskrunner_num_cpus: 2
-
-
