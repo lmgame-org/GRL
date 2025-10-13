@@ -99,9 +99,4 @@ class RLDataset:
 
   async def collect_group_trajectories(self) -> List[List[Dict[str, Any]]]:
     builders = self.get_batch()
-
-    async def collect_one(builder: AgentGroupBuilder) -> List[Dict[str, Any]]:
-      agents = await builder.make_agents()
-      return await builder.generate_full_trajectories(agents=agents)
-
-    return await asyncio.gather(*[collect_one(b) for b in builders])
+    return await asyncio.gather(*[b.generate_full_trajectories() for b in builders])
