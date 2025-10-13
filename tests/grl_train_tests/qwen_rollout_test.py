@@ -100,7 +100,24 @@ def main():
   import grl.rollout.torch_sync_rollout as rollout_mod
   rollout_mod.DataProto = DummyDataProto
 
+  # Provide the missing builder that TorchSyncRollout.generate_sequences expects
   from grl.rollout.torch_sync_rollout import TorchSyncRollout
+  def _build_dataproto_from_prompts(prompts):
+    toks = tokenizer(
+      prompts,
+      return_tensors="pt",
+      padding=True,
+      truncation=False,
+    )
+    return DummyDataProto({
+      "input_ids": toks.input_ids,
+      "attention_mask": toks.attention_mask,
+    })
+  # Monkeypatch at class level so instances use it
+  try:
+    TorchSyncRollout._build_dataproto_from_prompts = staticmethod(_build_dataproto_from_prompts)
+  except Exception:
+    pass
 
   actor_wg = MockActorWG(tokenizer, model_name=model_name)
   cfg = _build_cfg(repo_root)

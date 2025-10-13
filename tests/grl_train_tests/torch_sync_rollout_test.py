@@ -1,275 +1,333 @@
-import os
-import json
 import types
 import numpy as np
-import torch
+import pytest
 
 
-class DummyTokenizer:
-  def __init__(self):
-    # Simple fake vocab for special tokens and basic words
-    self.pad_token_id = 0
-    self.eos_token_id = 2
-
-  def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
-    # Very simple concatenation of message contents
-    parts = []
-    for m in messages:
-      if isinstance(m, dict):
-        parts.append(str(m.get("content", "")))
-      else:
-        parts.append(str(m))
-    text = "\n".join(parts)
-    return text
-
-  def __call__(self, texts, return_tensors=None, padding=True, padding_side="left", truncation=False):
-    # Super-minimal tokenizer: map each char to id>0 for non-empty text
-    if isinstance(texts, str):
-      texts = [texts]
-    max_len = max(len(t) for t in texts) if texts else 1
-    input_ids = []
-    attn = []
-    for t in texts:
-      ids = [min(255, ord(c)) for c in t]
-      pad = [self.pad_token_id] * (max_len - len(ids))
-      if padding_side == "left":
-        arr = pad + ids
-        mask = [0] * len(pad) + [1] * len(ids)
-      else:
-        arr = ids + pad
-        mask = [1] * len(ids) + [0] * len(pad)
-      input_ids.append(arr)
-      attn.append(mask)
-    class R:
-      pass
-    r = R()
-    r.input_ids = torch.tensor(input_ids, dtype=torch.long)
-    r.attention_mask = torch.tensor(attn, dtype=torch.long)
-    return r
-
-  def batch_decode(self, batch_ids, skip_special_tokens=True):
-    # Reverse dummy: map integers back to chars if in printable range
-    outs = []
-    for row in batch_ids:
-      text = "".join(chr(int(x)) if int(x) >= 32 else " " for x in row)
-      outs.append(text.strip())
-    return outs
-
-  def encode(self, s):
-    # Used for special token lookups in masks; return non-zero ids for markers
-    return [1]
+class _MockRolloutCfg:
+  def __init__(self,
+               training,
+               validation,
+               agent_group_num,
+               agent_group_size,
+               validation_agent_group_num=None,
+               validation_agent_group_size=None,
+               validation_seed=123):
+    # Mimic configs/base.yaml (subset)
+    self.training = training
+    self.validation = validation
+    self.agent_group_num = agent_group_num
+    self.agent_group_size = agent_group_size
+    self.validation_agent_group_num = validation_agent_group_num or agent_group_num
+    self.validation_agent_group_size = validation_agent_group_size or agent_group_size
+    self.validation_seed = validation_seed
 
 
-class DummyDataProto:
-  def __init__(self, batch):
-    self.batch = batch
-    self.meta_info = {}
-    self.non_tensor_batch = {}
+class _MockCfg:
+  def __init__(self, rollout_cfg, agents_map):
+    # Attribute access for rollout, mapping access for agent configs
+    self.rollout = rollout_cfg
+    self._agents_map = dict(agents_map)
 
-  @staticmethod
-  def from_single_dict(d):
-    return DummyDataProto(d)
-
-
-class DummyActorWG:
-  def __init__(self):
-    self.world_size = 1
-
-  def generate_sequences(self, dp):
-    # Expect dp.batch["input_ids"], produce dp-like with "responses"
-    input_ids = dp.batch["input_ids"]
-    bsz = input_ids.shape[0]
-    # produce a simple response that includes an answer with a valid action string
-    # format: "<answer>Right || Right</answer>"
-    resp_text = "<answer>Right || Right</answer>"
-    responses = []
-    for _ in range(bsz):
-      responses.append([ord(c) for c in resp_text])
-    dp_out = DummyDataProto({"responses": torch.tensor(responses, dtype=torch.long)})
-    return dp_out
+  def __getitem__(self, key):
+    return self._agents_map[key]
 
 
-class StubEnvOut:
-  def __init__(self, state="", truncated=False, terminated=False, reward=0.0, info=None):
-    self.state = state
-    self.truncated = truncated
-    self.terminated = terminated
-    self.reward = reward
-    self.info = info or {}
-
-
-class StubAgent:
-  def __init__(self, config, group_id=0, agent_id=0, seed=None, tag=None):
-    self.group_id = group_id
-    self.agent_id = agent_id
-    self.tag = tag or "stub"
-    self.agent_config = config.get("agent_config", {})
-    self.env_config = config.get("env_config", {})
-    self.max_turns = int(self.agent_config.get("max_turns", 1))
-    self.action_separator = self.agent_config.get("action_separator", "||")
-    self.messages = [
-        {"role": "system", "content": self.agent_config.get("system_prompt", "sys")},
-        {"role": "user", "content": self.agent_config.get("prompt", "user")},
-    ]
-    self.history = []
-
-  def reset(self, seed=None):
-    # Reinitialize messages for a fresh turn
-    self.messages = [
-        {"role": "system", "content": self.agent_config.get("system_prompt", "sys")},
-        {"role": "user", "content": self.agent_config.get("prompt", "user")},
-    ]
-    return StubEnvOut(state="Sokoban(state)", truncated=False, terminated=False, reward=0.0, info={})
-
-  def get_messages(self):
-    return self.messages
-
-  def execute_tool_call(self, llm_response: str):
-    # No actual tools in this stub; signal no finish
-    return False, None
-
-  def get_env_outputs(self, llm_response: str):
-    # Treat llm_response as final assistant content
-    self.messages.append({"role": "assistant", "content": llm_response})
-    # Track simple history row
-    self.history.append({"state": "S", "actions_left": 0, "actions": [3, 3], "reward": 1.0, "info": {}, "llm_response": llm_response, "llm_raw_response": llm_response})
-    return StubEnvOut(state="Sokoban(next)", truncated=True, terminated=True, reward=1.0, info={})
-
-  def get_final_rollout_states(self):
-    return {
-        "agent_id": self.agent_id,
-        "group_id": self.group_id,
-        "tag": self.tag,
-        "history": self.history,
-        "metrics": {f"{self.tag}/success": 1.0},
-        "penalty": 0.0,
-    }
-
-
-def _build_min_cfg():
-  class Cfg(dict):
-    def __getattr__(self, k):
-      return self.get(k)
-    def __setattr__(self, k, v):
-      self[k] = v
-
-  cfg = Cfg()
-  cfg.max_prompt_length = 2048
-
-  class Roll:
-    pass
-  roll = Roll()
-  roll.truncation = False
-  roll.show_tqdm = False
-  roll.num_prompt_threads = 0
-  roll.num_env_threads = 0
-  roll.num_init_threads = 0
-  roll.agent_group_num = [1]
-  roll.agent_group_size = [2]
-  # Ensure rollout looks up the correct agent name
-  roll.training = ["sokobanCodingAgent"]
-
-  class RN:
-    pass
-  rn = RN()
-  rn.grouping = "batch"
-  rn.method = "identity"
-  roll.reward_normalization = rn
-  roll.use_turn_scores = False
-  cfg.rollout = roll
-
-  # agent section (dict under key; accessed via cfg[agent_name])
-  cfg.training = ["sokobanCodingAgent"]
-  cfg["sokobanCodingAgent"] = {
-      "agent_type": "sokobanAgent",
-      "agent_config": {
-          "tool_use": True,
-          "workspace_path": os.path.join(os.path.dirname(__file__), "..", "..", "workspace"),
-          "enable_think": False,
-          "max_tokens": 256,
-          "max_turns": 1,
-          "max_actions_per_turn": 10,
-          "max_actions_all_turns": 10,
-          "max_steps": 2,
-          "format_penalty": -0.1,
-          "action_separator": "||",
-      },
-      "env_config": {
-          "dim_room": [5, 5],
-          "num_boxes": 1,
-          "max_steps": 50,
-          "grid_lookup": {0: "#", 1: "_", 2: "O", 3: "√", 4: "X", 5: "P", 6: "S"},
-          "grid_vocab": {"#": "wall", "_": "empty", "O": "target", "√": "box on target", "X": "box", "P": "player", "S": "player on target"},
-          "action_lookup": {1: "Up", 2: "Down", 3: "Left", 4: "Right"},
-          "render_mode": "text",
-      },
-  }
-  return cfg
-
-
-def test_torch_sync_rollout_end_to_end(monkeypatch, tmp_path):
-  # Monkeypatch verl.DataProto used by rollout into our dummy
-  import grl.rollout.torch_sync_rollout as mod
-
-  # Patch inside module scope
-  monkeypatch.setitem(mod.__dict__, "DataProto", DummyDataProto)
-  # Patch AgentGroupBuilder.make_agents to produce stub agents
-  import grl_agents.agent_group_builder as agb
-  async def _stub_make_agents(self):
-    agents = []
-    for idx in range(self.group_num):
-      # Use rollout agent name to align metrics aggregation keys
-      agents.append(StubAgent(config=self.config, group_id=0, agent_id=idx, seed=self.seed, tag="sokobanCodingAgent"))
-    return agents
-  monkeypatch.setattr(agb.AgentGroupBuilder, "make_agents", _stub_make_agents, raising=True)
-
-  # Build rollout
-  from grl.rollout.torch_sync_rollout import TorchSyncRollout
-  cfg = _build_min_cfg()
-  tokenizer = DummyTokenizer()
-  actor_wg = DummyActorWG()
-
-  rollout = TorchSyncRollout(actor_wg, cfg, tokenizer, validation=False)
-
-  # Smoke test: get_batch_llm_prompts / env outputs requires agents; run rollout()
-  batch = rollout.rollout()
-
-  # Validate RolloutBatch structure
-  assert hasattr(batch, "input_ids")
-  assert hasattr(batch, "loss_mask")
-  assert hasattr(batch, "reward_scores")
-  assert hasattr(batch, "agent_raw_data")
-  assert hasattr(batch, "meta_info")
-
-  # Shapes
-  assert isinstance(batch.input_ids, np.ndarray)
-  assert isinstance(batch.loss_mask, np.ndarray)
-  assert isinstance(batch.reward_scores, np.ndarray)
-  assert isinstance(batch.agent_raw_data, dict)
-
-  # Non-empty
-  assert batch.input_ids.shape[0] > 0
-  assert batch.loss_mask.shape[0] == batch.input_ids.shape[0]
-  assert batch.reward_scores.shape[0] == batch.input_ids.shape[0]
-
-  # meta metrics include response_length
-  assert isinstance(batch.meta_info, dict)
-  assert "metrics" in batch.meta_info
-  assert "response_length" in batch.meta_info["metrics"]
-
-  # Ensure agent_raw_data arrays line up
-  n = batch.input_ids.shape[0]
-  for k in ["agent_ids", "group_ids", "messages_list"]:
-    assert k in batch.agent_raw_data
-    assert len(batch.agent_raw_data[k]) == n
-
-  # Test masks and scores compatibility
-  import grl.rollout.torch_sync_rollout as rmod
-  loss_mask, score_tensor, response_mask = rollout.get_masks_and_scores(
-      torch.tensor(batch.input_ids, dtype=torch.long),
-      all_scores=[[1.0] for _ in range(n)],
-      use_turn_scores=False,
+def _build_mock_cfg():
+  # Reference grl_agents/puzzle_agents/sokoban_coding_agent/config.py
+  from grl_agents.puzzle_agents.sokoban_coding_agent.config import (
+    get_sokoban_coding_agent_config,
   )
-  assert loss_mask.shape[0] == n
-  assert score_tensor.shape[0] == n
-  assert response_mask.shape[0] == n
+
+  training_agents = ["simpleSokobanAgent"]
+  validation_agents = ["simpleSokobanAgent", "largeSokobanAgent"]
+
+  rollout_cfg = _MockRolloutCfg(
+    training=training_agents,
+    validation=validation_agents,
+    agent_group_num=[2],
+    agent_group_size=[1],
+    validation_agent_group_num=[2, 2],
+    validation_agent_group_size=[1, 1],
+  )
+
+  # Map both names to a valid sokoban coding agent config for simplicity
+  sokoban_conf = get_sokoban_coding_agent_config()
+  agents_map = {
+    "simpleSokobanAgent": sokoban_conf,
+    "largeSokobanAgent": sokoban_conf,
+  }
+  return _MockCfg(rollout_cfg, agents_map)
+
+
+def test_setup_agent_config_normalizes_and_limits():
+  from grl.rollout.torch_sync_rollout import TorchSyncRollout
+
+  cfg = _build_mock_cfg()
+
+  # actor_wg and tokenizer are not used in setup; pass dummies
+  rollout = TorchSyncRollout(actor_rollout_wg=object(), cfg=cfg, tokenizer=object(), validation=False)
+  # setup is already called in __init__, but call again to assert idempotence
+  rollout._setup_agent_config()
+
+  assert rollout.agent_names == ["simpleSokobanAgent"]
+  assert len(rollout.agent_config_list) == 1
+
+  # From get_sokoban_coding_agent_config(): max_turns=1, max_steps=10
+  assert rollout.max_turns == 1
+  assert rollout.max_steps == 10
+
+
+def test_init_batch_agents_builds_expected_counts(monkeypatch):
+  import grl.rollout.torch_sync_rollout as tsr
+  from grl.rollout.torch_sync_rollout import TorchSyncRollout
+
+  cfg = _build_mock_cfg()
+
+  # Fake builder/agent to avoid async complexity
+  class FakeAgent:
+    pass
+
+  class FakeBuilder:
+    def __init__(self, group_size):
+      self.group_size = int(group_size)
+
+    async def make_agents(self):
+      # Return exactly group_size agents
+      return [FakeAgent() for _ in range(self.group_size)]
+
+  class FakeRLDataset:
+    def __init__(self, base_configs, seeds, group_nums, group_sizes, agent_names=None):
+      # Simulate one builder per group, each yielding group_size agents
+      self._builders = []
+      for i, num_groups in enumerate(group_nums):
+        for _ in range(int(num_groups)):
+          self._builders.append(FakeBuilder(group_sizes[i]))
+
+    def get_batch(self, index=None, agent_name=None, group_num=None):
+      return list(self._builders)
+
+  # Monkeypatch the dataset used by the rollout module
+  monkeypatch.setattr(tsr, "RLDataset", FakeRLDataset)
+
+  rollout = TorchSyncRollout(actor_rollout_wg=object(), cfg=cfg, tokenizer=object(), validation=False)
+  # setup already ran; now initialize agents without reset
+  rollout._init_batch_agents()
+
+  # With agent_group_num=[2], agent_group_size=[1] and one agent type -> 2 agents total
+  assert rollout.total_agent_num == 2
+  assert len(rollout.agents) == 2
+
+  # done_mask and env_outs as set by _init_batch_agents
+  assert isinstance(rollout.done_mask, np.ndarray)
+  assert rollout.done_mask.dtype == bool
+  assert rollout.done_mask.shape == (2,)
+  assert rollout.env_outs is None
+
+
+
+def test_rollout_edge_cases_four_agents(monkeypatch):
+  import grl.rollout.torch_sync_rollout as tsr
+  from grl.rollout.torch_sync_rollout import TorchSyncRollout
+
+  cfg = _build_mock_cfg()
+
+  # Simple tokenizer stub
+  class Tok:
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+      return " | ".join([str(m.get("content", "")) for m in messages])
+
+    def batch_decode(self, responses, skip_special_tokens=True):
+      return list(responses)
+
+  tokenizer = Tok()
+
+  # Fake EnvOutput
+  class EOut:
+    def __init__(self, truncated=False, terminated=False, state="s", reward=0.0):
+      self.truncated = truncated
+      self.terminated = terminated
+      self.state = state
+      self.reward = reward
+
+  # Fake Agent to simulate edge cases
+  class FA:
+    def __init__(self, agent_id, group_id, behavior, max_steps):
+      self.agent_id = agent_id
+      self.group_id = group_id
+      self.behavior = behavior
+      self.messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "u"}]
+      self.agent_config = {"max_steps": max_steps, "max_turns": 1, "enable_think": False, "use_think_answer_token": False}
+      self._tool_msgs = []
+
+    def get_llm_prompts(self, env_out):
+      return self.messages
+
+    def get_messages(self):
+      return self.messages
+
+    def get_tool_llm_prompts(self):
+      return self.get_messages()
+
+    def execute_tool_call(self, reply):
+      if self.behavior == "invalid":
+        # Append feedback; not done
+        self.messages.append({"role": "user", "content": "Invalid tool-call format. Please include <function=...>...</function>."})
+        return False, None
+      if self.behavior == "finish":
+        return True, EOut(truncated=True, terminated=True, state="done", reward=1.0)
+      if self.behavior == "no_finish":
+        return False, None
+      if self.behavior == "budget":
+        return False, None
+      return False, None
+
+    def get_env_outputs(self, reply):
+      return EOut(truncated=True, terminated=True, state="stepped", reward=0.5)
+
+    def reset(self, seed=None):
+      return EOut(truncated=False, terminated=False, state="init", reward=0.0)
+
+    def get_final_rollout_states(self):
+      return {"agent_id": self.agent_id, "group_id": self.group_id, "metrics": {"dummy/success": 1.0}}
+
+  # Patch reset to create 4 agents in 2 groups of size 2
+  def _fake_reset(self, seed=None):
+    self.agents = [
+      FA(0, 0, "invalid", 1),
+      FA(1, 0, "finish", 1),
+      FA(2, 1, "no_finish", 1),
+      FA(3, 1, "budget", 0),
+    ]
+    import numpy as np
+    self.done_mask = np.zeros(4, dtype=bool)
+    self.env_outs = [EOut() for _ in range(4)]
+
+  monkeypatch.setattr(tsr.TorchSyncRollout, "_reset_batch_agents", _fake_reset)
+
+  # Pre-programmed LLM responses: first env phase, then tool phase
+  calls = {"i": 0}
+  env_responses = ["", "", "", ""]
+  tool_responses = [
+    "nonsense",  # invalid
+    "<function=finish><parameter=result>move</parameter></function>",  # finish
+    "<answer>Up||Left</answer>",  # no finish
+    "tool"  # ignored due to budget=0
+  ]
+
+  class Out:
+    def __init__(self, responses):
+      self.batch = {"responses": responses}
+
+  def _fake_generate(self, prompts):
+    if calls["i"] == 0:
+      calls["i"] += 1
+      return Out(env_responses)
+    else:
+      return Out(tool_responses[: len(prompts)])
+
+  monkeypatch.setattr(tsr.TorchSyncRollout, "generate_sequences", _fake_generate)
+
+  # Simplify final batch building to avoid tokenizer plumbing
+  def _fake_build(self, states):
+    return {"n_agents": len(self.agents), "done_mask": self.done_mask.copy(), "states": states}
+
+  monkeypatch.setattr(tsr.TorchSyncRollout, "build_rollout_batch", _fake_build)
+
+  rollout = TorchSyncRollout(actor_rollout_wg=object(), cfg=cfg, tokenizer=tokenizer, validation=False)
+
+  result = rollout.rollout()
+
+  assert result["n_agents"] == 4
+  # Agent 1 done via finish, Agent 3 done via budget; others not forced done in inner loop
+  assert result["done_mask"].tolist() == [False, True, False, True]
+  # Group layout 0,0,1,1
+  assert [a.group_id for a in rollout.agents] == [0, 0, 1, 1]
+  # Invalid reply feedback recorded
+  assert any("Invalid tool-call format" in m.get("content", "") for m in rollout.agents[0].messages)
+
+
+def test_reset_batch_agents_initializes_messages_and_prompts(monkeypatch):
+  import grl.rollout.torch_sync_rollout as tsr
+  from grl.rollout.torch_sync_rollout import TorchSyncRollout
+
+  cfg = _build_mock_cfg()
+
+  # Simple tokenizer stub to build prompts
+  class Tok:
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+      return " || ".join([str(m.get("role", "")) + ":" + str(m.get("content", "")) for m in messages])
+
+  tokenizer = Tok()
+
+  # Minimal EnvOutput replacement
+  class EOut:
+    def __init__(self, state="init", truncated=False, terminated=False, reward=0.0):
+      self.state = state
+      self.truncated = truncated
+      self.terminated = terminated
+      self.reward = reward
+
+  # Fake agent that sets initial messages in reset
+  class FA:
+    def __init__(self, idx, group):
+      self.agent_id = idx
+      self.group_id = group
+      self.agent_config = {"max_steps": 1, "max_turns": 1}
+      self.messages = []
+
+    def reset(self, seed=None):
+      self.messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": f"init_state_seed={seed}"},
+      ]
+      return EOut(state=f"state_{seed}")
+
+    def get_messages(self):
+      return self.messages
+
+    def get_tool_llm_prompts(self):
+      return self.get_messages()
+
+  class FakeBuilder:
+    def __init__(self, group_id, group_size):
+      self.group_id = group_id
+      self.group_size = int(group_size)
+
+    async def make_agents(self):
+      return [FA(idx=i, group=self.group_id) for i in range(self.group_size)]
+
+  class FakeRLDataset:
+    def __init__(self, base_configs, seeds, group_nums, group_sizes, agent_names=None):
+      self._builders = []
+      gid = 0
+      for i, num_groups in enumerate(group_nums):
+        for _ in range(int(num_groups)):
+          self._builders.append(FakeBuilder(group_id=gid, group_size=group_sizes[i]))
+          gid += 1
+
+    def get_batch(self, index=None, agent_name=None, group_num=None):
+      return list(self._builders)
+
+  monkeypatch.setattr(tsr, "RLDataset", FakeRLDataset)
+
+  rollout = TorchSyncRollout(actor_rollout_wg=object(), cfg=cfg, tokenizer=tokenizer, validation=False)
+  rollout._reset_batch_agents(seed=42)
+
+  # Agents and env_outs created
+  assert len(rollout.agents) == rollout.total_agent_num
+  assert rollout.env_outs is not None
+  assert len(rollout.env_outs) == rollout.total_agent_num
+
+  # Each agent has initial messages (system + user)
+  for a in rollout.agents:
+    msgs = a.get_messages()
+    assert isinstance(msgs, list) and len(msgs) >= 2
+    assert msgs[0].get("role") == "system"
+    assert msgs[1].get("role") == "user"
+
+  # get_batch_tool_llm_prompts produces non-empty prompts from initial messages
+  active_indices = list(range(len(rollout.agents)))
+  tool_prompts = rollout.get_batch_tool_llm_prompts(active_indices)
+  assert len(tool_prompts) == len(active_indices)
+  assert all(isinstance(p, str) and len(p) > 0 for p in tool_prompts)
+

@@ -86,6 +86,12 @@ class TorchSyncRollout:
           self.cfg.rollout, "training", ["simpleSokobanAgent"]
       )
 
+    # Normalize to a list for downstream logic
+    if not isinstance(self.agent_names, (list, tuple)):
+      self.agent_names = [self.agent_names]
+    else:
+      self.agent_names = list(self.agent_names)
+
     # Build per-type configs and basic limits for convenience
     self.agent_config_list = []
     self.max_turns_list = []
@@ -130,11 +136,11 @@ class TorchSyncRollout:
         agent_names=self.agent_names,
     )
     # Flat list of builders for all groups
-    self.builders = self.dataset.get_batch(index=None, agent_name=self.agent_names[0])
+    self.builders = self.dataset.get_batch()
 
     # Instantiate agents synchronously without environment reset
     agents: List[Any] = []
-    for global_group_id, builder in enumerate(self.builders):
+    for builder in self.builders:
       try:
         import asyncio
         new_agents = asyncio.run(builder.make_agents())
@@ -148,11 +154,10 @@ class TorchSyncRollout:
           new_agents = asyncio.new_event_loop().run_until_complete(builder.make_agents())
 
       # AgentGroupBuilder already sets group_id and a contiguous agent_id offset
-      for local_id, agent in enumerate(new_agents):
-        agents.append(agent)
+      agents.extend(new_agents)
 
     self.agents = agents
-    self.done_mask = torch.zeros(self.total_agent_num, dtype=torch.bool)
+    self.done_mask = np.zeros(self.total_agent_num, dtype=bool)
     self.env_outs = None
 
   # ─────────────────── PROMPT/ENV HELPERS ───────────────────
@@ -163,9 +168,15 @@ class TorchSyncRollout:
     """
     llm_prompts = [""] * len(env_outputs)
     for idx, env_out in enumerate(env_outputs):
+      if self.done_mask is not None and self.done_mask[idx]:
+        llm_prompts[idx] = ""
+        continue
       agent = self.agents[idx]
       messages = agent.get_llm_prompts(env_out)
-      prompt_str = self._messages_to_prompt(messages, add_generation_prompt=True)
+      prompt_str = self.tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+      )
+      
       llm_prompts[idx] = prompt_str
     return llm_prompts
 
@@ -173,24 +184,138 @@ class TorchSyncRollout:
     """
     Update each agent's environment with decoded model responses.
     """
+    if self.env_outs is None:
+      raise RuntimeError("env_outs not initialized. Call rollout() or _reset_batch_agents() first.")
     updated_env_outs = [None] * len(llm_responses_str)
     for idx, reply in enumerate(llm_responses_str):
+      if self.done_mask is not None and self.done_mask[idx]:
+        updated_env_outs[idx] = self.env_outs[idx]
+        continue
       agent = self.agents[idx]
       env_out = agent.get_env_outputs(reply)
-      is_done = getattr(env_out, "truncated", False) or getattr(env_out, "terminated", False)
+      is_done = bool(getattr(env_out, "truncated", False) or getattr(env_out, "terminated", False))
       updated_env_outs[idx] = env_out
       self.env_outs[idx] = env_out
       if self.done_mask is not None:
         self.done_mask[idx] = is_done
     return updated_env_outs
 
+  # ─────────────────── MAIN ROLLOUT (TOOL-CALLING) ───────────────────
+  def get_batch_tool_llm_prompts(self, active_indices: List[int]) -> List[str]:
+    """
+    Build tool prompts for active agents from their current message histories.
+    """
+    prompts = [""] * len(active_indices)
+    for j, idx in enumerate(active_indices):
+      agent = self.agents[idx]
+      messages = agent.get_tool_llm_prompts() if hasattr(agent, "get_tool_llm_prompts") else agent.get_messages()
+      p = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+      prompts[j] = p
+    return prompts
+
+  def execute_batch_tool_call_requests(
+      self,
+      active_indices: List[int],
+      replies: List[str],
+      step_calls: List[int],
+      max_steps_list: List[int],
+  ) -> None:
+    """
+    For each active agent, execute one tool call (if present), or fallback to plain actions.
+    Updates env_outs and done_mask in place without exception handling for clearer debugging.
+    """
+    for j, idx in enumerate(active_indices):
+      # Respect already finished agents
+      if self.done_mask is not None and self.done_mask[idx]:
+        continue
+
+      reply = replies[j] if j < len(replies) else ""
+      agent = self.agents[idx]
+
+      if not reply:
+        # Empty/invalid reply: add simple feedback and continue
+        agent.messages.append({"role": "user", "content": "Empty model reply. Provide a valid tool call or <answer>."})
+        continue
+
+      # Increment step count; enforce max tool steps only after a non-empty reply
+      step_calls[idx] += 1
+      if step_calls[idx] > max_steps_list[idx]:
+        # Exhausted budget → mark done and skip
+        if self.done_mask is not None:
+          self.done_mask[idx] = True
+        continue
+
+      # Attempt tool execution
+      done, env_out_done = agent.execute_tool_call(reply)
+      if done:
+        if env_out_done is not None:
+          self.env_outs[idx] = env_out_done
+        if self.done_mask is not None:
+          self.done_mask[idx] = True
+        continue
+
+
+
+  # ─────────────────── SIMPLE CONTROL HELPERS ───────────────────
+  def _compute_max_steps_per_agent(self) -> List[int]:
+    """
+    Compute per-agent max tool-call steps from agent configs with sane defaults.
+    """
+    return [int(getattr(a, "agent_config", {}).get("max_steps", 10)) for a in self.agents]
+
+  def _mark_zero_budget_as_done(self, max_steps_list: List[int]) -> None:
+    """
+    Immediately mark agents with non-positive budgets as done for this turn.
+    """
+    if self.done_mask is None:
+      return
+    for i, mx in enumerate(max_steps_list):
+      if mx <= 0:
+        self.done_mask[i] = True
+
+  def _select_active_indices(self, step_calls: List[int], max_steps_list: List[int]) -> List[int]:
+    """
+    Select indices of agents that are not done and still have tool-call budget left.
+    """
+    if self.done_mask is None:
+      return []
+    return [
+        i for i in range(len(self.agents))
+        if (not self.done_mask[i]) and step_calls[i] < max_steps_list[i]
+    ]
+
+  def _all_done(self) -> bool:
+    return bool(self.done_mask is not None and self.done_mask.size > 0 and self.done_mask.all())
+
+  def _run_tool_phase_turn(self, max_steps_list: List[int], step_calls: List[int]) -> None:
+    """
+    Run the inner tool-calling loop for a single outer turn:
+    - Build prompts for active agents
+    - Generate model replies
+    - Execute at most one tool call per active agent per iteration
+    Stops when no active agents remain or all agents are done.
+    """
+    inner_budget = (max(max_steps_list) + 1) if max_steps_list else 0
+    for _ in range(inner_budget):
+      active_indices = self._select_active_indices(step_calls, max_steps_list)
+      if not active_indices:
+        break
+      tool_prompts = self.get_batch_tool_llm_prompts(active_indices)
+      lm_outputs_tools = self.generate_sequences(tool_prompts)
+      replies_tools = self.tokenizer.batch_decode(
+          lm_outputs_tools.batch["responses"], skip_special_tokens=True
+      )
+      self.execute_batch_tool_call_requests(active_indices, replies_tools, step_calls, max_steps_list)
+      if self._all_done():
+        break
+
+
   # ─────────────────── GENERATION ───────────────────
   def generate_sequences(self, prompts: List[str]):
     """
-    Use actor worker group to generate sequences from raw prompt strings.
-    Mirrors sync_multi_turn_rollout.generate_sequences with DataProto padding when available.
+    Generate sequences using the actor worker group (copied from SyncMultiTurnRollout).
+    Returns a DataProto with generated sequences.
     """
-    # Prepare DataProto
     lm_inputs = self._build_dataproto_from_prompts(prompts)
 
     try:
@@ -217,169 +342,38 @@ class TorchSyncRollout:
     else:
       lm_outputs = self.actor_wg.generate_sequences(lm_inputs)
 
-    # Decode to strings for tool pipeline
-    replies = self.tokenizer.batch_decode(
-        lm_outputs.batch["responses"], skip_special_tokens=True
-    )
-    return replies
+    return lm_outputs
 
-  # ─────────────────── MAIN ROLLOUT (TOOL-CALLING) ───────────────────
-  def get_batch_tool_prompts(self, active_indices: List[int]) -> List[str]:
-    """
-    Build prompts for a batch of active agents during the tool-calling loop.
-    """
-    prompts = [""] * len(active_indices)
-    for j, idx in enumerate(active_indices):
-      agent = self.agents[idx]
-      p = self._messages_to_prompt(agent.messages, add_generation_prompt=True)
-      prompts[j] = p
-    return prompts
-
-  def process_batch_tool_responses(
-      self,
-      active_indices: List[int],
-      replies: List[str],
-      step_calls: List[int],
-      max_steps_list: List[int],
-  ) -> None:
-    """
-    For each active agent, execute one tool call (if present), or fallback to plain actions.
-    Adds a 'Tool calls left: <k>' line to the most recent user feedback message when continuing.
-    Updates env_outs and done_mask in place.
-    """
-    for j, idx in enumerate(active_indices):
-      reply = replies[j] if j < len(replies) else ""
-      step_calls[idx] += 1
-      agent = self.agents[idx]
-
-      # Debug: show raw reply snippet
-      try:
-        print(f"[DEBUG][process] agent={idx} step_calls={step_calls[idx]} has_reply={bool(reply)} reply_snippet={repr(str(reply)[:200])}")
-      except Exception:
-        pass
-
-      if not reply:
-        continue
-
-      before_len = len(agent.get_messages())
-      done, env_out_done = agent.execute_tool_call(reply)
-
-      # Debug: outcome of execute_tool_call
-      try:
-        if done:
-          r = getattr(env_out_done, "reward", None)
-          term = getattr(env_out_done, "terminated", None)
-          trunc = getattr(env_out_done, "truncated", None)
-          print(f"[DEBUG][process] agent={idx} execute_tool_call done=True reward={r} terminated={term} truncated={trunc}")
-      except Exception:
-        pass
-
-      if done:
-        if env_out_done is not None:
-          self.env_outs[idx] = env_out_done
-        if self.done_mask is not None:
-          self.done_mask[idx] = True
-        continue
-
-      # Fallback: execute plain actions if no function block
-      if ("<function=" not in reply) and ("<answer>" in reply or "||" in reply):
-        try:
-          print(f"[DEBUG][process] agent={idx} fallback_to_env_step has_answer={("<answer>" in reply)} has_sep={("||" in reply)}")
-        except Exception:
-          pass
-        env_out3 = agent.get_env_outputs(reply)
-        self.env_outs[idx] = env_out3
-        if self.done_mask is not None:
-          self.done_mask[idx] = True
-        try:
-          print(f"[DEBUG][process] agent={idx} env_step reward={getattr(env_out3, 'reward', None)} terminated={getattr(env_out3, 'terminated', None)} truncated={getattr(env_out3, 'truncated', None)}")
-        except Exception:
-          pass
-        continue
-
-      # Add remaining budget hint to the last user feedback message (if any)
-      remaining = max(0, max_steps_list[idx] - step_calls[idx])
-      new_msgs = agent.get_messages()[before_len:]
-      for m in reversed(new_msgs):
-        if isinstance(m, dict) and m.get("role") == "user":
-          try:
-            m["content"] = f"{m.get('content', '')}\nTool calls left: {remaining}"
-            print(f"[DEBUG][process] agent={idx} budget_hint_added remaining={remaining}")
-          except Exception:
-            pass
-          break
 
   def rollout(self):
     """
-    Tool-calling rollout loop modeled after tests/grl_agents_tests/group_sokoban_coding_agent_test.py.
-    For each group/agent:
-      - Reset with deterministic group seed
-      - Repeatedly call the LLM (via actor_wg) and execute at most max_steps tool calls
-      - If <function=finish|submit> is invoked, execute final actions and stop
-      - Fallback: parse <answer>/plain actions and step the environment, then stop
-    Finally builds a RolloutBatch for PPO.
+    Simplified rollout focused on tool-calling only:
+    - Reset to initialize agents and initial messages/observations
+    - For each turn, repeatedly build tool prompts → generate → execute tool calls
+    - Build PPO batch from final trajectories
     """
-    # Build groups and agents for this episode based on seeds
+    # Initialize groups/agents for this episode
     self._reset_batch_agents()
 
-    # Batched tool-calling loop across all agents
-    # Prepare per-agent step budgets
-    max_steps_list = [int(a.agent_config.get("max_steps", 10)) for a in self.agents]
+    max_steps_list = self._compute_max_steps_per_agent()
     step_calls = [0 for _ in self.agents]
     max_turns = max(getattr(a, "max_turns", 1) for a in self.agents) or 1
 
-    # Multi-step, single-turn style (loop turns, with inner max-steps) but we typically run 1 turn
-    for turn_idx in range(max_turns):
-      for step_idx in range(max(max_steps_list) if max_steps_list else 0):
-        active_indices = [
-            i for i, a in enumerate(self.agents)
-            if (self.done_mask is not None and not self.done_mask[i]) and step_calls[i] < max_steps_list[i]
-        ]
-        try:
-          print(f"[DEBUG][rollout] turn={turn_idx} step={step_idx} active_indices={active_indices}")
-        except Exception:
-          pass
-        if not active_indices:
-          break
+    for _ in range(max_turns):
+      if self._all_done():
+        break
 
-        prompts = self.get_batch_tool_prompts(active_indices)
-        try:
-          # Debug: show prompt snippets
-          try:
-            for j, idx in enumerate(active_indices):
-              print(f"[DEBUG][prompt] agent={idx} prompt_snippet={repr(str(prompts[j])[:200])}")
-          except Exception:
-            pass
-          replies = self.generate_sequences(prompts)
-        except Exception:
-          replies = [""] * len(active_indices)
+      # Immediately mark agents with zero budget as done; then run tool phase
+      self._mark_zero_budget_as_done(max_steps_list)
+      self._run_tool_phase_turn(max_steps_list, step_calls)
 
-        # Debug: show reply presence
-        try:
-          for j, idx in enumerate(active_indices):
-            r = replies[j] if j < len(replies) else ""
-            print(f"[DEBUG][reply] agent={idx} has_reply={bool(r)} contains_function={("<function=" in str(r))} contains_finish={("<function=finish>" in str(r))}")
-          
-        except Exception:
-          pass
-
-        self.process_batch_tool_responses(active_indices, replies, step_calls, max_steps_list)
-        if self.done_mask is not None and bool(self.done_mask.all()):
-          break
-
-    # After all groups/agents finish, collect trajectories and build PPO batch
-    final_rollout_states = self._collect_final_rollout_states()
-
-    # Debug/trace printout of final rollout states (repr), tailored for SokobanCodingAgent
-    try:
-      print("\n=== Final Rollout States (repr) ===")
-      for i, st in enumerate(final_rollout_states):
-        try:
-          print(f"[Agent {i}]", repr(st))
-        except Exception:
-          print(f"[Agent {i}] <unprintable state>")
-    except Exception:
-      pass
+    # Collect final trajectories using dataset helper when available
+    if self.dataset is not None:
+      import asyncio
+      per_group_agent_rollouts = asyncio.run(self.dataset.collect_group_trajectories())
+      final_rollout_states = [state for group in per_group_agent_rollouts for state in group]
+    else:
+      final_rollout_states = self._collect_final_rollout_states()
 
     return self.build_rollout_batch(final_rollout_states)
 
@@ -562,13 +556,13 @@ class TorchSyncRollout:
 
     # Build per-type seeds and builders using dataset one-shot API
     base_configs = []
-    seeds = []
+    type_base_seeds = []
     for i in range(len(self.agent_names)):
       base_configs.append(self.agent_config_list[i])
-      seeds.append(base_seed + i * 100000)
+      type_base_seeds.append(base_seed + i * 100000)
     self.dataset = RLDataset(
         base_configs=base_configs,
-        seeds=seeds,
+        seeds=type_base_seeds,
         group_nums=self.agent_group_num_list,
         group_sizes=self.agent_group_size_list,
     )
@@ -576,6 +570,13 @@ class TorchSyncRollout:
 
     # Instantiate agents synchronously
     agents: List[Any] = []
+    # Precompute per-builder group seeds in the same order as builders were created
+    group_seeds: List[int] = []
+    for i, num_groups in enumerate(self.agent_group_num_list):
+      base_s = type_base_seeds[i]
+      for j in range(int(num_groups)):
+        group_seeds.append(int(base_s + j))
+
     for global_group_id, builder in enumerate(self.builders):
       try:
         import asyncio
@@ -596,16 +597,16 @@ class TorchSyncRollout:
         agent.group_id = global_group_id
         agent.agent_id = len(agents)
         # Reset with group seed, capture EnvOutput
-        env_out = agent.reset(seed=seeds[global_group_id])
+        env_out = agent.reset(seed=group_seeds[global_group_id])
         agents.append(agent)
 
     self.agents = agents
     self.done_mask = np.zeros(len(self.agents), dtype=bool)
-    # Populate initial env_outs from fresh reset states by prompting a no-op action
+    # Populate initial env_outs using each agent's reset observation
     self.env_outs = [None] * len(self.agents)  # type: ignore
     for idx, agent in enumerate(self.agents):
+      # Agent.reset already produced the initial observation/state in messages; render minimal EnvOutput
       try:
-        # Prefer the EnvOutput returned by reset; reconstruct minimal if needed
         from grl_agents.utils import EnvOutput
         obs_txt = agent.env.render()
         self.env_outs[idx] = EnvOutput(truncated=False, terminated=False, state=obs_txt, reward=0.0, info={})

@@ -43,26 +43,11 @@ class SokobanCodingAgent(BaseAgent):
       os.environ["GRL_WORKSPACE_ROOT"] = self.workspace_path
     else:
       self.workspace_path = None  # type: ignore[assignment]
-    self.prompt = self._build_enhanced_prompt(self.prompt)
     # Initialize per-episode tool-call message recorder when tool_use is enabled
     self.tool_trajectory: Optional[SingleTurnToolCallTrajectory] = (
         SingleTurnToolCallTrajectory() if self.tool_use else None
     )
     self.initialize_env()
-
-  def _build_enhanced_prompt(self, base_prompt: str) -> str:
-    enhanced_prompt = base_prompt
-    if self.env_config.get("grid_vocab"):
-      symbols = [f"{k}: {v}" for k, v in self.env_config["grid_vocab"].items()]
-      enhanced_prompt += (
-          "\nThe meaning of each symbol in the state is:\n "
-          + ", ".join(symbols)
-      )
-    if self.env_config.get("action_lookup"):
-      actions = list(self.env_config["action_lookup"].values())
-      enhanced_prompt += "\nYour available actions are:\n" + ", ".join(actions)
-    enhanced_prompt += f"\nYou can make up to {self.max_actions_all_turns} actions, and each action is separated by '{self.action_separator}'."
-    return enhanced_prompt
 
   def initialize_env(self) -> None:
     self.env = SokobanEnv(self.env_config)
@@ -102,7 +87,7 @@ class SokobanCodingAgent(BaseAgent):
   def reset(self, seed: int | None = None) -> EnvOutput:
     # Use base reset to clear history/counters and get initial observation
     env_out = super().reset(seed=seed)
-    # Rebuild initial messages to mirror external test prompt structure
+    # Initialize messages following single_sokoban_coding_agent_test behavior
     initial_user = self._build_initial_user_prompt(env_out.state)
     self.messages = [
         {"role": "system", "content": self.system_prompt},
@@ -286,6 +271,14 @@ class SokobanCodingAgent(BaseAgent):
         info=info,
     )
 
+  def get_tool_llm_prompts(self) -> List[Dict[str, str]]:
+    """
+    Build tool-calling messages similar to get_llm_prompts but using the
+    current conversation. For simplicity, return the full transcript so the
+    rollout can apply the chat template and add generation prompt.
+    """
+    return self.get_messages()
+
   def execute_tool_call(self, llm_response: str) -> Tuple[bool, Optional[EnvOutput]]:
     """Process exactly one tool call from the given LLM response.
 
@@ -295,17 +288,24 @@ class SokobanCodingAgent(BaseAgent):
     """
     function_blocks = self._parse_function_blocks(llm_response)
     if not function_blocks:
+      # Record a concise feedback for invalid tool-call text
+      self.messages.append({"role": "user", "content": "Invalid tool-call format. Please include <function=...>...</function>."})
+      if self.tool_trajectory is not None:
+        self.tool_trajectory.add({"role": "user", "content": "Invalid tool-call format. Please include <function=...>...</function>."})
       return False, None
 
     block = function_blocks[0]
     fn_name, params = self._parse_function_call(block)
     if not fn_name:
+      self.messages.append({"role": "user", "content": "Malformed function block. Please specify a function name."})
+      if self.tool_trajectory is not None:
+        self.tool_trajectory.add({"role": "user", "content": "Malformed function block. Please specify a function name."})
       return False, None
 
-    # Log assistant call
-    self.messages.append({"role": "assistant", "content": block})
+    # Log assistant raw response (track full LLM output)
+    self.messages.append({"role": "assistant", "content": str(llm_response)})
     if self.tool_trajectory is not None:
-      self.tool_trajectory.add({"role": "assistant", "content": block})
+      self.tool_trajectory.add({"role": "assistant", "content": str(llm_response)})
 
     if fn_name.lower() in {"finish", "submit"}:
       result_text = params.get("result", "")
