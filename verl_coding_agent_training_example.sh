@@ -5,8 +5,8 @@
 
 # ------ Configurable Parameters ------
 CUDA_VISIBLE_DEVICES=${1:-"0"}
-AGENT_GROUP_NUM=${2:-"2"}
-AGENT_GROUP_SIZE=${3:-"2"}
+AGENT_GROUP_NUM=${2:-"4"}
+AGENT_GROUP_SIZE=${3:-"8"}
 VALIDATION_AGENT_GROUP_NUM=${4:-"8"}
 VALIDATION_AGENT_GROUP_SIZE=${5:-"1"}
 TRAINING_TASKS=${6:-"sokobanCodingAgent"}

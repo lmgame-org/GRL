@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Tuple, Optional, Union
 import re
 import os
+import shutil
 from pathlib import Path
 
 from grl_agents.base_agent import BaseAgent
@@ -85,6 +86,29 @@ class SokobanCodingAgent(BaseAgent):
     return "\n".join(parts)
 
   def reset(self, seed: int | None = None) -> EnvOutput:
+    # Clean workspace directory for a fresh episode
+    try:
+      if self.workspace_path is not None:
+        root = Path(self.workspace_path)
+        if root.exists():
+          for item in root.iterdir():
+            try:
+              if item.is_file() or item.is_symlink():
+                try:
+                  item.unlink(missing_ok=True)
+                except TypeError:
+                  # Fallback for older Python: no missing_ok
+                  if item.exists():
+                    item.unlink()
+              elif item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            except Exception:
+              pass
+        # Ensure tools see the correct workspace root
+        os.environ["GRL_WORKSPACE_ROOT"] = self.workspace_path
+    except Exception:
+      pass
+
     # Use base reset to clear history/counters and get initial observation
     env_out = super().reset(seed=seed)
     # Initialize messages following single_sokoban_coding_agent_test behavior
