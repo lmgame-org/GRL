@@ -45,22 +45,35 @@ def test_rl_dataset_get_batch_shape_and_seeds():
 
   base_configs = [{"x": 1}, {"x": 2}, {"x": 3}]
   seeds = [100, 200, 300]
-  dataset = rl_dataset.RLDataset(base_configs=base_configs, seeds=seeds)
+  dataset = rl_dataset.RLDataset(
+      base_configs=base_configs,
+      seeds=seeds,
+      group_nums=[1, 2, 1],
+      group_sizes=[1, 2, 3],
+  )
 
-  # Get batch for a single index
-  builders = dataset.get_batch(index=1, agent_name="mock", group_num=2)
-  assert len(builders) == 1
-  b = builders[0]
-  assert b.seed == 200
-  assert b.group_num == 2
+  # Get flat list of builders (replicated per index via group_nums)
+  builders = dataset.get_batch()
+  # Total builders = 1 + 2 + 1 = 4
+  assert len(builders) == 4
+  # Order: i=0 (seed=100), i=1 (seed=200), i=1 (seed=201), i=2 (seed=300)
+  assert builders[0].seed == 100 and builders[0].group_num == 1 and builders[0].group_id == 0
+  assert builders[1].seed == 200 and builders[1].group_num == 2 and builders[1].group_id == 1
+  assert builders[2].seed == 201 and builders[2].group_num == 2 and builders[2].group_id == 2
+  assert builders[3].seed == 300 and builders[3].group_num == 3 and builders[3].group_id == 3
 
 
 def test_rl_dataset_builders_create_mock_agents_simple():
   MockAgent = _stub_sokoban_agent_module()
   rl_dataset = importlib.import_module("grl_agents.rl_dataset")
 
-  dataset = rl_dataset.RLDataset(base_configs=[{"k": "v"}], seeds=[10])
-  builders = dataset.get_batch(index=0, group_num=3)
+  dataset = rl_dataset.RLDataset(
+      base_configs=[{"k": "v"}],
+      seeds=[10],
+      group_nums=[1],
+      group_sizes=[3],
+  )
+  builders = dataset.get_batch()
 
   # Build agents synchronously; ensure properties are wired through
   all_agents = []
@@ -69,7 +82,7 @@ def test_rl_dataset_builders_create_mock_agents_simple():
     assert len(agents) == 3
     for a_idx, agent in enumerate(agents):
       assert isinstance(agent, MockAgent)
-      assert agent.group_id == 0
+      assert agent.group_id == builder.group_id
       assert agent.agent_id == a_idx
       # All agents in the group share the same seed and tag
       assert agent.seed == 10
@@ -84,16 +97,23 @@ def test_collect_group_trajectories_async():
   _stub_sokoban_agent_module()
   rl_dataset = importlib.import_module("grl_agents.rl_dataset")
 
-  dataset = rl_dataset.RLDataset(base_configs=[{"z": 3}, {"z": 4}], seeds=[5, 15])
+  # Build dataset with two groups (seeds 15 and 16), each size 2
+  dataset = rl_dataset.RLDataset(
+      base_configs=[{"z": 4}],
+      seeds=[15],
+      group_nums=[2],
+      group_sizes=[2],
+  )
 
-  # Async call: returns list per group, each a list per agent
-  results = _run_async(dataset.collect_group_trajectories(index=1, group_num=2))
+  # Async call: returns list per group (here 2), each a list per agent
+  results = _run_async(dataset.collect_group_trajectories())
   assert isinstance(results, list)
-  assert len(results) == 1
-  # Group has 2 agents' rollouts
-  assert len(results[0]) == 2
-  # Shared seed reflected in tags per agent
+  assert len(results) == 2
+  # Each group has 2 agents' rollouts
+  assert len(results[0]) == 2 and len(results[1]) == 2
+  # Shared seeds reflected in tags per agent (15 then 16)
   assert all(row["tag"].endswith("sokobanCodingAgent-15") for row in results[0])
+  assert all(row["tag"].endswith("sokobanCodingAgent-16") for row in results[1])
 
 
 def _run_async(coro):

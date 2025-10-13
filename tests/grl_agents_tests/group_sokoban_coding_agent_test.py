@@ -91,8 +91,8 @@ def main():
   from grl_agents.agent_group_builder import AgentGroupBuilder
 
   base_conf = get_sokoban_coding_agent_config()
-  # Build dataset as list of groups with individual seeds
-  dataset = RLDataset(base_configs=[base_conf], seeds=[123])
+  # Build dataset as list of groups with individual seeds; group_nums replicates groups per seed
+  dataset = RLDataset(base_configs=[base_conf], seeds=[123], group_nums=[1], group_sizes=[1])
 
   # Build two groups; each group will have two agents sharing the same seed
   builders = [
@@ -290,7 +290,7 @@ def main():
       pass
 
   # Also run dataset-level collection (fresh agents) and log
-  ds_rows = _run_async(dataset.collect_group_trajectories(index=0))
+  ds_rows = _run_async(dataset.collect_group_trajectories())
   _append_log(log_file, "=== Dataset rollouts (fresh agents) ===")
   try:
     _append_log(log_file, json.dumps(ds_rows))

@@ -4,30 +4,33 @@ from typing import List, Dict, Any, Sequence, Optional
 
 import asyncio
 from grl_agents.agent_group_builder import AgentGroupBuilder
+from grl_agents import get_agent_cls
 
 """
 RLDataset
 
 Public API:
 
-- __init__(base_configs: List[Dict], seeds: List[int])
-  Configure a dataset as a list of groups, each with its own base_config and seed.
+- __init__(base_configs: List[Dict], seeds: List[int], group_nums: Optional[List[int]] = None, group_sizes: Optional[List[int]] = None, agent_names: Optional[List[str]] = None)
+  Configure one or many groups per (seed, config). For each i: number of groups is
+  `group_nums[i]` (default 1). Group seeds are `seeds[i] + local_group_id`.
+  Each group's size is from `group_sizes[i]` (default 1).
 
-- get_batch(index)
-  Return a list of AgentGroupBuilder instances for the given index (single group index).
+- get_batch()
+  Return a flat list of `AgentGroupBuilder` instances for all groups across all i.
 
-- async collect_group_trajectories(index, agent_name="sokobanCodingAgent", group_num=1)
-  Build the agent group for the given index and concurrently collect final rollout
-  states from all agents in the group. Returns a single-element list containing
-  the list of per-agent trajectory dicts for that group.
+- async collect_group_trajectories()
+  Concurrently collect final rollout states for all groups. Returns a list where
+  each element is the per-agent rollout list for that group's builder.
 """
 
 
 class RLDataset:
-  """Dataset of groups, each defined by a base_config and a seed.
+  """Dataset of groups with optional replication per index.
 
-  Optionally supports one-shot builder construction across multiple agent types
-  when group_nums and group_sizes are provided.
+  For each i, build `group_nums[i]` groups (default 1). Group j uses seed `seeds[i] + j`.
+  Each group's size is `group_sizes[i]` (default 1). Agent class comes from `agent_names[i]`
+  or `config['agent_type']` (default 'sokobanCodingAgent').
   """
 
   def __init__(
@@ -36,67 +39,66 @@ class RLDataset:
       seeds: Sequence[int],
       group_nums: Optional[Sequence[int]] = None,
       group_sizes: Optional[Sequence[int]] = None,
+      agent_names: Optional[Sequence[str]] = None,
   ):
     assert len(base_configs) == len(seeds), "base_configs and seeds must align"
     if group_nums is not None:
       assert len(group_nums) == len(base_configs), "group_nums must align with base_configs"
     if group_sizes is not None:
       assert len(group_sizes) == len(base_configs), "group_sizes must align with base_configs"
+    if agent_names is not None:
+      assert len(agent_names) == len(base_configs), "agent_names must align with base_configs"
+
     self.base_configs = list(base_configs)
     self.seeds = [int(s) for s in seeds]
     self.group_nums = [int(g) for g in group_nums] if group_nums is not None else None
     self.group_sizes = [int(g) for g in group_sizes] if group_sizes is not None else None
+    self.agent_names = list(agent_names) if agent_names is not None else None
 
-  def get_batch(
-      self,
-      index: Optional[int] = None,
-      agent_name: str = "sokobanCodingAgent",
-      group_num: int = 1,
-      group_size: int = 1,
-  ) -> List[AgentGroupBuilder]:
-    """
-    Build and return `AgentGroupBuilder` instances.
+    # Prebuild one builder per index (one group per seed)
+    self._builders: List[AgentGroupBuilder] = []
 
-    - Default (index=None): Build all groups across all indices using the
-      per-type `group_nums` and `group_sizes` configured at construction.
-    - Per-index (index=int): Build `group_num` groups for the specific index,
-      each with `group_size` agents. Seeds per group are deterministic:
-      `seeds[index] + local_group_id`.
-    """
-    builders: List[AgentGroupBuilder] = []
-    if index is None:
-      assert self.group_nums is not None and self.group_sizes is not None, "group_nums/group_sizes required when index=None"
-      for i, cfg in enumerate(self.base_configs):
-        base_seed = self.seeds[i]
-        num_groups = int(self.group_nums[i])
-        group_sz = int(self.group_sizes[i])
-        for local_group_id in range(num_groups):
-          builders.append(
-              AgentGroupBuilder(
-                  seed=base_seed + local_group_id,
-                  config=cfg,
-                  group_num=group_sz,
-                  agent_name=agent_name,
-              )
-          )
-      return builders
-
-    # index provided → per-index builders
-    seed_base = self.seeds[index]
-    cfg = self.base_configs[index]
-    for local_group_id in range(int(group_num)):
-      builders.append(
-          AgentGroupBuilder(
-              seed=seed_base + local_group_id,
-              config=cfg,
-              group_num=int(group_size),
-              agent_name=agent_name,
-          )
+    global_group_counter = 0
+    for i, cfg in enumerate(self.base_configs):
+      base_seed = self.seeds[i]
+      num_groups = int(self.group_nums[i]) if self.group_nums is not None else 1
+      group_sz = int(self.group_sizes[i]) if self.group_sizes is not None else 1
+      # Determine agent name then resolve class from registry
+      cfg_agent_type = (
+          str(cfg.get("agent_type"))
+          if isinstance(cfg, dict) and cfg.get("agent_type") is not None
+          else None
       )
-    return builders
+      agent_name = (
+          self.agent_names[i]
+          if self.agent_names is not None
+          else (cfg_agent_type or "sokobanCodingAgent")
+      )
+      agent_cls = get_agent_cls(agent_name)
 
-  async def collect_group_trajectories(self, index: Optional[int] = None, agent_name: str = "sokobanCodingAgent", group_num: int = 1, group_size: int = 1) -> List[List[Dict[str, Any]]]:
-    builders = self.get_batch(index=index, agent_name=agent_name, group_num=group_num, group_size=group_size)
+      for local_group_id in range(num_groups):
+        self._builders.append(
+            AgentGroupBuilder(
+                seed=base_seed + local_group_id,
+                config=cfg,
+                group_num=group_sz,
+                group_id=global_group_counter,
+                agent_id_offset=0,
+                agent_cls=agent_cls,
+                agent_name=agent_name,
+            )
+        )
+        global_group_counter += 1
+
+  def get_batch(self, index: Optional[int] = None, agent_name: Optional[str] = None, group_num: Optional[int] = None) -> List[AgentGroupBuilder]:
+    """Return the prebuilt builders.
+
+    Backward-compatible signature: extra parameters are ignored.
+    """
+    return list(self._builders)
+
+  async def collect_group_trajectories(self) -> List[List[Dict[str, Any]]]:
+    builders = self.get_batch()
 
     async def collect_one(builder: AgentGroupBuilder) -> List[Dict[str, Any]]:
       agents = await builder.make_agents()

@@ -76,6 +76,7 @@ class TorchSyncRollout:
 
   # ─────────────────── AGENT CONFIG ───────────────────
   def _setup_agent_config(self):
+    # Resolve agent type names used for this rollout
     if self.validation:
       self.agent_names = getattr(
           self.cfg.rollout, "validation", ["simpleSokobanAgent"]
@@ -85,17 +86,16 @@ class TorchSyncRollout:
           self.cfg.rollout, "training", ["simpleSokobanAgent"]
       )
 
+    # Build per-type configs and basic limits for convenience
     self.agent_config_list = []
     self.max_turns_list = []
     self.max_steps_list = []
     for agent_name in self.agent_names:
-      self.agent_config_list.append(self.cfg[agent_name])
-      self.max_turns_list.append(
-          self.cfg[agent_name]["agent_config"].get("max_turns", 5)
-      )
-      self.max_steps_list.append(
-          int(self.cfg[agent_name]["agent_config"].get("max_steps", 10))
-      )
+      conf = self.cfg[agent_name]
+      self.agent_config_list.append(conf)
+      ac = conf.get("agent_config", {})
+      self.max_turns_list.append(ac.get("max_turns", 5))
+      self.max_steps_list.append(int(ac.get("max_steps", 10)))
     self.max_turns = max(self.max_turns_list) if self.max_turns_list else 1
     self.max_steps = max(self.max_steps_list) if self.max_steps_list else 10
 
@@ -116,19 +116,20 @@ class TorchSyncRollout:
     # Initialize dataset and builders for one synthetic episode (no reset here)
     import random
     base_seed = random.randint(0, 1_000_000)
+
     # Per agent type seeds/configs
-    base_configs = []
-    seeds = []
-    for i in range(len(self.agent_names)):
-      base_configs.append(self.agent_config_list[i])
-      seeds.append(base_seed + i * 100000)  # distinct base seed per type
+    base_configs = [self.agent_config_list[i] for i in range(len(self.agent_names))]
+    seeds = [base_seed + i * 100000 for i in range(len(self.agent_names))]
+
+    # RLDataset prebuilds AgentGroupBuilders and assigns group_id contiguously
     self.dataset = RLDataset(
         base_configs=base_configs,
         seeds=seeds,
         group_nums=self.agent_group_num_list,
         group_sizes=self.agent_group_size_list,
+        agent_names=self.agent_names,
     )
-    # Build all builders in one shot via get_batch(index=None)
+    # Flat list of builders for all groups
     self.builders = self.dataset.get_batch(index=None, agent_name=self.agent_names[0])
 
     # Instantiate agents synchronously without environment reset
@@ -146,9 +147,8 @@ class TorchSyncRollout:
           import asyncio
           new_agents = asyncio.new_event_loop().run_until_complete(builder.make_agents())
 
+      # AgentGroupBuilder already sets group_id and a contiguous agent_id offset
       for local_id, agent in enumerate(new_agents):
-        agent.group_id = global_group_id
-        agent.agent_id = len(agents)
         agents.append(agent)
 
     self.agents = agents

@@ -61,6 +61,8 @@ def test_make_agents_simple():
       seed=seed,
       group_num=group_num,
       config={"foo": "bar"},
+      group_id=7,
+      agent_id_offset=100,
       agent_cls=MockAgent,
       agent_name="mock",
   )
@@ -70,8 +72,8 @@ def test_make_agents_simple():
   assert len(agents) == group_num
   for i, agent in enumerate(agents):
     assert isinstance(agent, MockAgent)
-    assert agent.group_id == 0
-    assert agent.agent_id == i
+    assert agent.group_id == 7
+    assert agent.agent_id == 100 + i
     # All agents should share the same seed and tag in the group
     assert agent.seed == seed
     assert agent.tag == f"mock-{seed}"

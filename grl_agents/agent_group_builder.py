@@ -35,12 +35,16 @@ class AgentGroupBuilder:
       seed: int,
       config: Dict[str, Any],
       group_num: int,
+      group_id: int = 0,
+      agent_id_offset: int = 0,
       agent_cls: Type[SokobanCodingAgent] = SokobanCodingAgent,
       agent_name: str = "sokobanCodingAgent",
   ) -> None:
     self.seed = int(seed)
     self.group_num = int(group_num)
     self.config = config
+    self.group_id = int(group_id)
+    self.agent_id_offset = int(agent_id_offset)
     self.agent_cls = agent_cls
     self.agent_name = agent_name
 
@@ -53,8 +57,8 @@ class AgentGroupBuilder:
     for idx in range(self.group_num):
       agent = self.agent_cls(
           config=self.config,
-          group_id=0,
-          agent_id=idx,
+          group_id=self.group_id,
+          agent_id=self.agent_id_offset + idx,
           seed=self.seed,
           tag=f"{self.agent_name}-{self.seed}",
       )
