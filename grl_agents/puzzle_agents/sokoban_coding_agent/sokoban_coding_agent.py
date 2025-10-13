@@ -26,6 +26,9 @@ class SokobanCodingAgent(BaseAgent):
     super().__init__(config, group_id, agent_id, seed, tag)
     # Whether to enable tool-use protocol and tracking
     self.tool_use: bool = bool(self.agent_config.get("tool_use", False))
+    # Track per-turn tool calls from config (max_steps budget)
+    self.max_tool_steps: int = int(self.agent_config.get("max_steps", 10))
+    self.tool_calls_this_turn: int = 0
     # Resolve per-agent workspace path from config and ensure it exists
     base_workspace = self.agent_config.get("workspace_path")
     if base_workspace:
@@ -109,6 +112,8 @@ class SokobanCodingAgent(BaseAgent):
     if self.tool_trajectory is not None:
       self.tool_trajectory.clear()
       self.tool_trajectory.extend(self.messages)
+    # Reset tool-call counter for the new turn
+    self.tool_calls_this_turn = 0
     return env_out
 
   # ─────────────────── TOOL-CALL PROTOCOL HELPERS ───────────────────
@@ -306,6 +311,8 @@ class SokobanCodingAgent(BaseAgent):
       result_text = params.get("result", "")
       action_line = result_text.split("\n", 1)[0].split("---", 1)[0].strip()
       env_out = self.get_env_outputs(action_line)
+      # Turn finalized; reset counter for potential next turn
+      self.tool_calls_this_turn = 0
       return True, env_out
 
     tool_out: Dict[str, Any] = {"output": "", "exit_code": "0"}
@@ -321,6 +328,18 @@ class SokobanCodingAgent(BaseAgent):
     self.messages.append({"role": "user", "content": feedback})
     if self.tool_trajectory is not None:
       self.tool_trajectory.add({"role": "user", "content": feedback})
+    # Count this tool call; if budget exhausted without finish, force finalize with empty answer
+    try:
+      self.tool_calls_this_turn += 1
+    except Exception:
+      self.tool_calls_this_turn = self.tool_calls_this_turn if isinstance(self.tool_calls_this_turn, int) else 0
+      self.tool_calls_this_turn += 1
+    if self.tool_calls_this_turn >= self.max_tool_steps:
+      # Force a final step with empty actions
+      env_out = self.get_env_outputs("")
+      # Reset counter for a potential next turn
+      self.tool_calls_this_turn = 0
+      return True, env_out
     return False, None
 
   def get_final_rollout_states(self) -> Dict[str, Any]:

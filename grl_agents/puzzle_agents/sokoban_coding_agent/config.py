@@ -37,7 +37,7 @@ def get_sokoban_coding_agent_config():
     but with system_prompt and prompt replaced by the ones in agent.prompts.
     """
     return {
-        "agent_type": "sokobanAgent",
+        "agent_type": "sokobanCodingAgent",
         "agent_config": {
             "system_prompt": sokoban_system_prompt,
             "prompt": sokoban_user_prompt,
@@ -54,8 +54,8 @@ def get_sokoban_coding_agent_config():
             "action_separator": "||",
         },
         "env_config": {
-            "dim_room": [10, 10],
-            "num_boxes": 5,
+            "dim_room": [8, 8],
+            "num_boxes": 2,
             "max_steps": 100,
             "search_depth": 100,
             "grid_lookup": {0: "#", 1: "_", 2: "O", 3: "√", 4: "X", 5: "P", 6: "S"},

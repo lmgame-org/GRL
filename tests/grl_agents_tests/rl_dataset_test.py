@@ -71,8 +71,9 @@ def test_rl_dataset_builders_create_mock_agents_simple():
       assert isinstance(agent, MockAgent)
       assert agent.group_id == 0
       assert agent.agent_id == a_idx
-      assert agent.seed == 10 + a_idx
-      assert agent.tag == f"sokobanCodingAgent-{agent.seed}"
+      # All agents in the group share the same seed and tag
+      assert agent.seed == 10
+      assert agent.tag == f"sokobanCodingAgent-10"
       assert agent.config == {"k": "v"}
     all_agents.extend(agents)
 
@@ -91,6 +92,8 @@ def test_collect_group_trajectories_async():
   assert len(results) == 1
   # Group has 2 agents' rollouts
   assert len(results[0]) == 2
+  # Shared seed reflected in tags per agent
+  assert all(row["tag"].endswith("sokobanCodingAgent-15") for row in results[0])
 
 
 def _run_async(coro):

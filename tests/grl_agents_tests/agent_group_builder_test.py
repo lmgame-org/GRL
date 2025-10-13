@@ -72,8 +72,9 @@ def test_make_agents_simple():
     assert isinstance(agent, MockAgent)
     assert agent.group_id == 0
     assert agent.agent_id == i
-    assert agent.seed == seed + i
-    assert agent.tag == f"mock-{seed + i}"
+    # All agents should share the same seed and tag in the group
+    assert agent.seed == seed
+    assert agent.tag == f"mock-{seed}"
     assert agent.config == {"foo": "bar"}
 
 
@@ -93,4 +94,6 @@ def test_generate_full_trajectories_no_reset():
   out = _run_async(builder.generate_full_trajectories(agents=agents))
   assert isinstance(out, list)
   assert len(out) == group_num
+  # Shared seed reflected in tags
+  assert all(row["tag"].endswith(f"mock-{seed}") for row in out)
 

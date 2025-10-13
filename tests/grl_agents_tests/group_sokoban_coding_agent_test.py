@@ -94,7 +94,11 @@ def main():
   # Build dataset as list of groups with individual seeds
   dataset = RLDataset(base_configs=[base_conf], seeds=[123])
 
-  builders = dataset.get_batch(index=0, group_num=2)
+  # Build two groups; each group will have two agents sharing the same seed
+  builders = [
+      AgentGroupBuilder(seed=123, config=base_conf, group_num=2),
+      AgentGroupBuilder(seed=456, config=base_conf, group_num=2),
+  ]
   _append_log(log_file, f"=== Group test: groups={len(builders)} agents_per_group={2} ===")
 
   # LLM provider setup (same as single-agent test)

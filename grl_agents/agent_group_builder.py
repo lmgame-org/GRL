@@ -48,16 +48,15 @@ class AgentGroupBuilder:
     """
     Build a group of fresh agents.
     """
-    prepared: List[int] = [self.seed + i for i in range(self.group_num)]
-
+    # All agents in this group share the same environment seed
     agents: List[SokobanCodingAgent] = []
-    for idx, seed in enumerate(prepared):
+    for idx in range(self.group_num):
       agent = self.agent_cls(
           config=self.config,
           group_id=0,
           agent_id=idx,
-          seed=seed,
-          tag=f"{self.agent_name}-{seed}",
+          seed=self.seed,
+          tag=f"{self.agent_name}-{self.seed}",
       )
       agents.append(agent)
     return agents
