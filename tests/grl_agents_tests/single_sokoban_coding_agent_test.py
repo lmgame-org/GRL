@@ -129,7 +129,7 @@ def main():
 
   # Provider/model setup
   provider = "openai"
-  model = "gpt-5-mini"
+  model = "gpt-5"
   print(f"Model provider={provider} model={model or '(default)'}")
   _append_log(log_file, f"=== Model provider={provider} model={model or '(default)'} ===")
 

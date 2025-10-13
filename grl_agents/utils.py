@@ -63,6 +63,41 @@ class MultiTurnTrajectory:
     self.trajectories.clear()
 
 
+@dataclass
+class SingleTurnToolCallTrajectory:
+  """Container for logging one-turn tool-call interactions as chat messages.
+
+  This mirrors the chat message format used by the rollout utilities and
+  external providers, e.g.:
+    {"role": "system", "content": "..."}
+    {"role": "user", "content": "..."}
+    {"role": "assistant", "content": "..."}
+
+  Intended to capture LLM tool call blocks and corresponding tool feedbacks
+  within a single episode/turn.
+  """
+
+  messages: List[Dict[str, Any]] = field(default_factory=list)
+
+  def add(self, message: Dict[str, Any]) -> None:
+    """Append a single chat message dict."""
+    if isinstance(message, dict) and "role" in message and "content" in message:
+      self.messages.append({"role": str(message["role"]), "content": str(message["content"])})
+
+  def extend(self, messages: List[Dict[str, Any]]) -> None:
+    """Append a list of chat message dicts."""
+    for m in messages:
+      self.add(m)
+
+  def get(self) -> List[Dict[str, Any]]:
+    """Return the list of captured messages."""
+    return list(self.messages)
+
+  def clear(self) -> None:
+    """Clear all captured messages."""
+    self.messages.clear()
+
+
 @contextmanager
 def all_seed(seed):
   """Context manager to set random seeds temporarily."""

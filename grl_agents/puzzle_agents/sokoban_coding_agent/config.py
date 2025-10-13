@@ -41,6 +41,8 @@ def get_sokoban_coding_agent_config():
         "agent_config": {
             "system_prompt": sokoban_system_prompt,
             "prompt": sokoban_user_prompt,
+            # Enable/disable tool-use protocol (function-call tools)
+            "tool_use": True,
             "workspace_path": workspace_absolute_path,
             "enable_think": False,
             "max_tokens": 10000,

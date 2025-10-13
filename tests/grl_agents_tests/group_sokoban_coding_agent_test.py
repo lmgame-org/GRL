@@ -108,6 +108,7 @@ def main():
   from grl_agents.api_serving.api_providers import chat_completion, LLMProviderError
 
   # Iterate groups
+  all_group_rows = []
   for g_idx, builder in enumerate(builders):
     # Create agents for the group
     agents = _run_async(builder.make_agents())
@@ -138,6 +139,7 @@ def main():
       # Reset environment with deterministic per-group seed
       group_seed = builders[0].seed
       env_out = agent.reset(seed=group_seed)
+      _append_log(interaction_log, f"Initial observation: {env_out.state}")
 
       # Build initial user message
       symbols = agent.env_config.get("grid_vocab", {})
@@ -251,6 +253,15 @@ def main():
 
     # After the group run, collect trajectories for these agents
     group_rows = _run_async(builder.generate_full_trajectories(agents=agents))
+    # Accumulate all agent rollouts across groups for a combined log/file
+    try:
+      all_group_rows.extend(list(group_rows))
+    except Exception:
+      # Fallback if group_rows is not iterable as expected
+      try:
+        all_group_rows.append(group_rows)
+      except Exception:
+        pass
     _append_log(log_file, "=== Group rollouts (existing agents) ===")
     try:
       _append_log(log_file, json.dumps(group_rows))
@@ -281,6 +292,17 @@ def main():
     _append_log(log_file, json.dumps(ds_rows))
   except Exception:
     _append_log(log_file, str(ds_rows))
+
+  # Persist a combined rollout file containing all agents across all groups
+  try:
+    combined_file = cache_dir / "group_rollouts.json"
+    combined_file.write_text(json.dumps(all_group_rows), encoding="utf-8")
+    _append_log(log_file, f"=== Combined group rollouts saved: {len(all_group_rows)} agents ===")
+  except Exception:
+    try:
+      combined_file.write_text(str(all_group_rows), encoding="utf-8")
+    except Exception:
+      pass
 
 
 

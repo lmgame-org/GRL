@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from grl_agents.base_agent import BaseAgent
-from grl_agents.utils import SingleTurnTrajectory, EnvOutput
+from grl_agents.utils import SingleTurnTrajectory, EnvOutput, SingleTurnToolCallTrajectory
 from grl.agents import register_agent
 from .sokoban_env import SokobanEnv
 from grl_agents.tools import build_default_tool_manager
@@ -24,6 +24,8 @@ class SokobanCodingAgent(BaseAgent):
 
   def __init__(self, config, group_id=0, agent_id=0, seed=None, tag=None):
     super().__init__(config, group_id, agent_id, seed, tag)
+    # Whether to enable tool-use protocol and tracking
+    self.tool_use: bool = bool(self.agent_config.get("tool_use", False))
     # Resolve per-agent workspace path from config and ensure it exists
     base_workspace = self.agent_config.get("workspace_path")
     if base_workspace:
@@ -39,6 +41,10 @@ class SokobanCodingAgent(BaseAgent):
     else:
       self.workspace_path = None  # type: ignore[assignment]
     self.prompt = self._build_enhanced_prompt(self.prompt)
+    # Initialize per-episode tool-call message recorder when tool_use is enabled
+    self.tool_trajectory: Optional[SingleTurnToolCallTrajectory] = (
+        SingleTurnToolCallTrajectory() if self.tool_use else None
+    )
     self.initialize_env()
 
   def _build_enhanced_prompt(self, base_prompt: str) -> str:
@@ -57,11 +63,53 @@ class SokobanCodingAgent(BaseAgent):
 
   def initialize_env(self) -> None:
     self.env = SokobanEnv(self.env_config)
-    # Initialize tool manager for function-call protocol
+    # Initialize tool manager for function-call protocol only when enabled
     try:
-      self.tool_manager = build_default_tool_manager()
+      if self.tool_use:
+        self.tool_manager = build_default_tool_manager()
+      else:
+        self.tool_manager = None
     except Exception:
       self.tool_manager = None
+
+  def _build_initial_user_prompt(self, state_text: str) -> str:
+    # Build initial user prompt mirroring tests/grl_agents_tests/single_sokoban_coding_agent_test.py
+    symbols = self.env_config.get("grid_vocab", {}) or {}
+    symbols_txt = ", ".join([f"{k}: {v}" for k, v in symbols.items()]) if symbols else ""
+    actions_txt = ", ".join(self.env_config.get("action_lookup", {}).values())
+    parts = [
+        self.prompt,
+        "",
+        "Initial Sokoban state:",
+        str(state_text),
+        "",
+        f"The meaning of each symbol is: {symbols_txt}",
+        f"Your available actions are: {actions_txt}",
+        f"Separator: '{self.action_separator}'",
+        f"Max actions total: {self.max_actions_all_turns}",
+    ]
+    if self.tool_use:
+      max_steps = int(self.agent_config.get("max_steps", 10))
+      parts.append(
+          "Tool-call budget: at most "
+          f"{max_steps} tool calls this turn. Include a line 'Tool calls left: <k>' in every response and call <function=finish> on the final step."
+      )
+    return "\n".join(parts)
+
+  def reset(self, seed: int | None = None) -> EnvOutput:
+    # Use base reset to clear history/counters and get initial observation
+    env_out = super().reset(seed=seed)
+    # Rebuild initial messages to mirror external test prompt structure
+    initial_user = self._build_initial_user_prompt(env_out.state)
+    self.messages = [
+        {"role": "system", "content": self.system_prompt},
+        {"role": "user", "content": initial_user},
+    ]
+    # Reset tool-call trajectory if enabled and capture the initial two messages
+    if self.tool_trajectory is not None:
+      self.tool_trajectory.clear()
+      self.tool_trajectory.extend(self.messages)
+    return env_out
 
   # ─────────────────── TOOL-CALL PROTOCOL HELPERS ───────────────────
   def _parse_function_blocks(self, text: str) -> List[str]:
@@ -251,6 +299,8 @@ class SokobanCodingAgent(BaseAgent):
 
     # Log assistant call
     self.messages.append({"role": "assistant", "content": block})
+    if self.tool_trajectory is not None:
+      self.tool_trajectory.add({"role": "assistant", "content": block})
 
     if fn_name.lower() in {"finish", "submit"}:
       result_text = params.get("result", "")
@@ -260,7 +310,7 @@ class SokobanCodingAgent(BaseAgent):
 
     tool_out: Dict[str, Any] = {"output": "", "exit_code": "0"}
     try:
-      if getattr(self, "tool_manager", None) is not None:
+      if self.tool_use and getattr(self, "tool_manager", None) is not None:
         tool_out = self.tool_manager.execute(fn_name, params)
       else:
         tool_out = {"output": f"Tool manager unavailable for {fn_name}.", "exit_code": "-1"}
@@ -269,4 +319,15 @@ class SokobanCodingAgent(BaseAgent):
 
     feedback = self._format_tool_observation(fn_name, tool_out)
     self.messages.append({"role": "user", "content": feedback})
+    if self.tool_trajectory is not None:
+      self.tool_trajectory.add({"role": "user", "content": feedback})
     return False, None
+
+  def get_final_rollout_states(self) -> Dict[str, Any]:
+    # Extend base rollout state with tool_msg transcript when tool_use is enabled
+    base = super().get_final_rollout_states()
+    if self.tool_trajectory is not None:
+      base["tool_msg"] = self.tool_trajectory.get()
+    else:
+      base["tool_msg"] = []
+    return base
