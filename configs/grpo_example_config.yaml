@@ -110,12 +110,15 @@ actor_rollout_ref:
             vllm_log_prob: true
 algorithm:
     value:
-        adv_estimator: grpo
+        adv_estimator: gae
         gamma: 1
         kl_ctrl:
             kl_coef: 0.001
-            type: fixed
+            type: adaptive
+            target_kl: 0.1
+            horizon: 10000
         kl_penalty: kl
+        use_kl_in_reward: false
         lam: 1
 critic:
     value:
