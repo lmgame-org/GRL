@@ -24,4 +24,3 @@ fi
 python "$PY_SCRIPT" 2>&1 | tee "$LOG_FILE"
 
 echo "Training completed. Log: $LOG_FILE"
-

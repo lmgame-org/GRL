@@ -45,7 +45,7 @@ print(jax.devices())
 
 
 try:
-  wandb.login(key="e27080071466d108dc7c16fc6ff885b296d8b608")
+  wandb.login(key="") # add your key here
   print("linchai: logged in to W&B")
 except wandb.errors.UsageError as e:
   print(f"Failed to log in to W&B: {e}")
@@ -351,7 +351,7 @@ def build_models_and_tokenizer(cfg, derived):
   mesh = jax.make_mesh(*derived["mesh"])  # [shape, axes]
   model_config = get_model_config_from_repo_id(repo_id)
   with mesh:
-    qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
+    qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.float32)
     policy_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh)
     rollout_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
     critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
@@ -564,7 +564,7 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
           rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
               max_tokens_to_generate=derived["total_generation_steps"],
               max_prompt_length=derived["max_prompt_length"],
-              kv_cache_size=derived["max_prompt_length"]
+              kv_cache_size=derived["max_completion_length"]
               + derived["total_generation_steps"]
               + 256,
               temperature=derived["temperature_train"],
