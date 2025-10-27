@@ -57,10 +57,10 @@ class SokobanEnv(GymSokobanEnv, BaseEnv):
     Take an action in the environment.
     Actions: 1=Up, 2=Down, 3=Left, 4=Right (from our config)
     """
-    logging.info(f"Taking action in env: {action}")
+    print(f"Taking action in env: {action}")
     previous_pos = self.player_position.copy()
     _, reward, done, _ = GymSokobanEnv.step(self, action)
-    logging.info(f"step from GymSokobanEnv: {a=}, {reward=}, {done=}, {b=}")
+    print(f"step from GymSokobanEnv {reward=}, {done=}")
     next_obs = self.render()
     action_effective = not np.array_equal(previous_pos, self.player_position)
     info = {
@@ -68,7 +68,7 @@ class SokobanEnv(GymSokobanEnv, BaseEnv):
         "action_is_valid": True,
         "success": self.boxes_on_target == self.num_boxes,
     }
-    logging.info(f"Step info: reward={reward}, done={done}, info={info}")
+    print(f"Step info: reward={reward}, done={done}, info={info}")
     return next_obs, reward, done, info
 
   def render(self, mode=None):

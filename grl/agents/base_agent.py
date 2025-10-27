@@ -117,7 +117,7 @@ class BaseAgent:
     Returns:
         Tuple[str, List[str]]: (processed_llm_response, actions_list)
     """
-    logging.info("Raw LLM response: %s", llm_response)
+    print("Raw LLM response: ", llm_response)
     import re
 
     if self.agent_config.get("use_think_answer_token", True):
@@ -144,6 +144,8 @@ class BaseAgent:
         think_content, action_content = match.group(1), match.group(2)
       else:
         think_content, action_content = "", match.group(1)
+      print("Extracted action_content: ", action_content)
+      print("Extracted think_content: ", think_content)
 
       # Clean up special tokens
       special_tokens = [
@@ -158,12 +160,15 @@ class BaseAgent:
         action_content = action_content.replace(special_token, "").strip()
         think_content = think_content.replace(special_token, "").strip()
 
+      print("Extracted action_content after special tokens: ", action_content)
+      print("Extracted think_content after special tokens: ", think_content)
       # Parse actions using || separator
       actions = [
           action.strip()
           for action in action_content.split(self.action_separator)
           if action.strip()
       ]
+      print("Parsed actions: ", actions)
 
       # Limit actions to max_actions_per_turn
       if len(actions) > self.max_actions_per_turn:
@@ -180,6 +185,9 @@ class BaseAgent:
       else:
         processed_response = f"<answer>{action_content}</answer>"
 
+    print("Processed LLM response: ", processed_response)
+    print("Parsed actions: ", actions)
+
     return processed_response, actions
 
   # ─────────────────── ROLLOUT STATE COLLECTION ───────────────────
@@ -188,7 +196,7 @@ class BaseAgent:
     history = []
     trajectory_deque = self.trajectory_history.get()
     for traj in trajectory_deque:
-      logging.info("traj: %s", traj)
+      print("traj: %s", traj)
       history_entry = {
           "state": traj.state,
           "actions_left": traj.actions_left,
@@ -223,6 +231,7 @@ class BaseAgent:
     action_is_valid_values = [
         traj.info.get("action_is_valid", False) for traj in trajectory_deque
     ]
+    print("action_is_valid_values", action_is_valid_values)
     if action_is_valid_values:
       metrics[f'{self.tag or "baseAgent"}/action_is_valid'] = sum(
           action_is_valid_values

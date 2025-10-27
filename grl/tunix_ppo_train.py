@@ -351,8 +351,8 @@ def build_models_and_tokenizer(cfg, derived):
   mesh = jax.make_mesh(*derived["mesh"])  # [shape, axes]
   model_config = get_model_config_from_repo_id(repo_id)
   with mesh:
-    qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.float32)
-    policy_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh)
+    qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
+    policy_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.float32)
     rollout_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
     critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
   tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
@@ -564,8 +564,8 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
           rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
               max_tokens_to_generate=derived["total_generation_steps"],
               max_prompt_length=derived["max_prompt_length"],
-              kv_cache_size=derived["max_completion_length"]
-              + derived["total_generation_steps"]
+              kv_cache_size=derived["max_prompt_length"]
+              + derived["total_generation_steps"]*10
               + 256,
               temperature=derived["temperature_train"],
               top_p=derived["top_p"],
@@ -575,7 +575,7 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
               max_tokens_to_generate=derived["total_generation_steps"],
               max_prompt_length=derived["max_prompt_length"],
               kv_cache_size=derived["max_prompt_length"]
-              + derived["total_generation_steps"]
+              + derived["total_generation_steps"]*10
               + 256,
               temperature=derived["temperature_eval"],
               top_p=1.0,

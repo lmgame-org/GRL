@@ -369,6 +369,7 @@ class SyncMultiTurnRollout:
     # Turn indicators: increment at every <|im_start|>
     turn_starts = np.where(np_input_ids == special_token, 1, 0).astype(np.int32)
     turn_indicators = np.cumsum(turn_starts, axis=-1).astype(np.int32)
+    print("turn_indicators", turn_indicators)
 
     # Masks in NumPy
     response_mask_np = (turn_indicators % 2 == 1) & (turn_indicators > 1)
