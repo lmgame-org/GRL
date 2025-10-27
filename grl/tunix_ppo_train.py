@@ -45,7 +45,7 @@ print(jax.devices())
 
 
 try:
-  wandb.login(key="e27080071466d108dc7c16fc6ff885b296d8b608")
+  wandb.login(key="") # add your wandb keys here
   print("linchai: logged in to W&B")
 except wandb.errors.UsageError as e:
   print(f"Failed to log in to W&B: {e}")
