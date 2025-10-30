@@ -305,7 +305,8 @@ class SyncMultiTurnRollout:
         RolloutOutput: The rollout output containing text/tokens for completions
     """
     rollout_mode = Mode.EVAL if self.validation else Mode.TRAIN
-    return self.rl_cluster.generate(prompts=llm_prompts, mode=rollout_mode)
+    return self.rl_cluster.generate(prompts=llm_prompts, mode=rollout_mode,
+                                    micro_batch_size=self.rl_cluster.cluster_config.training_config.rollout_micro_batch_size)
 
   # ─────────────────── MAIN ROLLOUT LOOP ───────────────────
   def rollout(self):

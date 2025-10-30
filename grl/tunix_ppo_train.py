@@ -45,7 +45,7 @@ print(jax.devices())
 
 
 try:
-  wandb.login(key="") # add your wandb keys here
+  wandb.login(key="e27080071466d108dc7c16fc6ff885b296d8b608")
   print("linchai: logged in to W&B")
 except wandb.errors.UsageError as e:
   print(f"Failed to log in to W&B: {e}")
@@ -353,7 +353,8 @@ def build_models_and_tokenizer(cfg, derived):
   with mesh:
     qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
     policy_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.float32)
-    rollout_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
+    # rollout_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
+    rollout_qwen2 = None
     critic_qwen2 = get_critic_model(model_config, qwen2_ref, mesh)
   tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
   if tokenizer.pad_token_id is None:
@@ -564,9 +565,7 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
           rl_cluster_lib.Mode.TRAIN: base_rollout.RolloutConfig(
               max_tokens_to_generate=derived["total_generation_steps"],
               max_prompt_length=derived["max_prompt_length"],
-              kv_cache_size=derived["max_prompt_length"]
-              + derived["total_generation_steps"]*10
-              + 256,
+              kv_cache_size=derived["max_completion_length"] + derived["max_prompt_length"],
               temperature=derived["temperature_train"],
               top_p=derived["top_p"],
               top_k=derived["top_k"],
@@ -574,9 +573,7 @@ def build_cluster_config(mesh, tokenizer, derived, cfg):
           rl_cluster_lib.Mode.EVAL: base_rollout.RolloutConfig(
               max_tokens_to_generate=derived["total_generation_steps"],
               max_prompt_length=derived["max_prompt_length"],
-              kv_cache_size=derived["max_prompt_length"]
-              + derived["total_generation_steps"]*10
-              + 256,
+              kv_cache_size=derived["max_prompt_length"] + derived["max_completion_length"],
               temperature=derived["temperature_eval"],
               top_p=1.0,
               top_k=None,
@@ -687,7 +684,7 @@ def main(cfg: DictConfig):
         actor=policy_qwen2,
         critic=critic_qwen2,
         reference=qwen2_ref,
-        rollout=rollout_qwen2,
+        # rollout=rollout_qwen2,
         tokenizer=tokenizer,
         cluster_config=cluster_config,
     )

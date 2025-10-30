@@ -460,6 +460,7 @@ class PpoLearnerExp(PpoLearner):
           completion_tokens=completion_ids,
           pad_id=pad_value,
           eos_id=eos_value,
+          micro_batch_size=self.rl_cluster.cluster_config.training_config.compute_logps_micro_batch_size,
           completion_mask=completion_mask,
       )
     else:
@@ -474,6 +475,7 @@ class PpoLearnerExp(PpoLearner):
         prompt_tokens=prompt_ids,
         completion_tokens=completion_ids,
         completion_mask=completion_mask,
+        micro_batch_size=self.rl_cluster.cluster_config.training_config.compute_logps_micro_batch_size,
     )
 
     # ===== Value computation ======
