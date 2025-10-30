@@ -42,10 +42,11 @@ class BaseAgent:
     self.action_separator = self.agent_config.get("action_separator", "||")
 
     # Define turn prompt template based on enable_think
+    # linchai: add `respond in English` to avoid chinese response issue.
     if self.enable_think:
-      self.turn_prompt_template = """Turn {turn_number}:\nState:\n{state}\nYou have {actions_remaining} actions remaining. Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
+      self.turn_prompt_template = """Turn {turn_number}:\nState:\n{state}\nYou have {actions_remaining} actions remaining. Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens. Respond in English.\n"""
     else:
-      self.turn_prompt_template = """Turn {turn_number}:\nState:\n{state}\nYou have {actions_remaining} actions remaining. Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
+      self.turn_prompt_template = """Turn {turn_number}:\nState:\n{state}\nYou have {actions_remaining} actions remaining. Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens. Respond in English.\n"""
 
     self.trajectory_history = MultiTurnTrajectory(max_length=self.max_turns)
     self.raw_response_list = []  # Store all raw LLM responses for debugging
