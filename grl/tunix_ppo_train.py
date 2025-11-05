@@ -351,7 +351,7 @@ def build_models_and_tokenizer(cfg, derived):
   mesh = jax.make_mesh(*derived["mesh"])  # [shape, axes]
   model_config = get_model_config_from_repo_id(repo_id)
   with mesh:
-    qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
+    qwen2_ref = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.float32)
     policy_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.float32)
     # rollout_qwen2 = load_qwen2_from_safetensors(model_dir, model_config, mesh, dtype=jnp.bfloat16)
     rollout_qwen2 = None
