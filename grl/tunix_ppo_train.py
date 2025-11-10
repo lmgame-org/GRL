@@ -97,7 +97,7 @@ def derive_hparams(cfg):
     mesh_axes = tuple(str(x) for x in cfg.cluster.mesh.axes)
     mesh = [mesh_shape, mesh_axes]
   except Exception:
-    mesh = [(2, 4), ("fsdp", "tp")]
+    mesh = [(2, 2), ("fsdp", "tp")]
 
   # Rollout runtime (cluster.rollout_config)
   train_rc = cfg.cluster.rollout_config.train

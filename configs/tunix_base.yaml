@@ -44,7 +44,7 @@ rollout:
 # ------ Cluster configuration (RLCluster) ------
 cluster:
   mesh:
-    shape: [2, 4]
+    shape: [2, 2]
     axes: ["fsdp", "tp"]
   # role_to_mesh can be a mapping per role in future. For now "same" means
   # use the single mesh for all roles.
@@ -104,5 +104,5 @@ trainer:
 
 # ------ Model artifacts ------
 model:
-  repo_id: Qwen/Qwen2.5-7B-Instruct
+  repo_id: Qwen/Qwen2.5-0.5B-Instruct
 
