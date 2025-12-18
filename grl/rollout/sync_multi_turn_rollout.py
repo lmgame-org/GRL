@@ -106,7 +106,10 @@ class SyncMultiTurnRollout:
     self.agent_config_list = []
     self.max_turns_list = []
     for agent_name in self.agent_names:
-      agent_type = self.cfg[agent_name]["agent_type"]
+      # Support both new format (agent_name) and legacy format (agent_type)
+      agent_type = self.cfg[agent_name].get("agent_name") or self.cfg[agent_name].get("agent_type")
+      if not agent_type:
+        raise ValueError(f"Config for '{agent_name}' must have either 'agent_name' or 'agent_type'")
 
       # Resolve agent class from registry
       self.agent_cls_list.append(get_agent_cls(agent_type))
@@ -196,12 +199,10 @@ class SyncMultiTurnRollout:
         )
       except Exception:
         prompt_str = "System error in chat template"
-      if agent.agent_config.get("use_think_answer_token", True):
-        prompt_str += (
-            "<think>"
-            if agent.agent_config.get("enable_think", True)
-            else "<answer>"
-        )
+      if agent.agent_config.get("enable_think", True):
+        prompt_str += "<think>"
+        # Store flag for two-stage generation
+        agent._use_two_stage_think = True
       return idx, prompt_str
 
     with ThreadPoolExecutor(max_workers=self.num_prompt_threads) as ex:

@@ -1,15 +1,9 @@
-# ─────────────────── IMPORTS ───────────────────
-import random
-import yaml
-from typing import List, Dict, Any, Tuple
-from dataclasses import dataclass
-from grl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
+from grl.agents.agent_utils import SingleTurnTrajectory, EnvOutput
 from grl.agents.base_agent import BaseAgent
 from grl.agents.blocksworldAgent.env import BlocksworldEnv
 from grl.agents import register_agent
 
 
-# ─────────────────── BLOCKSWORLD AGENT ───────────────────
 @register_agent("blocksworldAgent")
 class BlocksworldAgent(BaseAgent):
   """
@@ -25,7 +19,6 @@ class BlocksworldAgent(BaseAgent):
     """Initialize the Blocksworld environment."""
     self.env = BlocksworldEnv(self.env_config)
 
-  # ─────────────────── ENV INTERACTION ───────────────────
   def get_env_outputs(self, llm_response: str):
     """
     Parse the model’s reply, send the (single) numeric answer to BlocksworldEnv,

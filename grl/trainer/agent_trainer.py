@@ -17,7 +17,7 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer, apply_kl_penalty, comput
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_timing_metrics, compute_throughout_metrics
-from verl.utils.debug.performance import marked_timer
+from verl.utils.profiler.performance import marked_timer
 from verl.utils.metric import reduce_metrics
 
 # Import our multi-turn rollout manager

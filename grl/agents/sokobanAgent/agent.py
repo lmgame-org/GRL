@@ -1,15 +1,8 @@
-# ─────────────────── IMPORTS ───────────────────
-import random
-import yaml
-from typing import List, Dict, Any, Tuple
-from dataclasses import dataclass
-from grl.agents.agent_utils import SingleTurnTrajectory, MultiTurnTrajectory, EnvOutput, debug_printout_in_env_output
+from grl.agents.agent_utils import SingleTurnTrajectory, EnvOutput
 from grl.agents.base_agent import BaseAgent
 from grl.agents.sokobanAgent.env import SokobanEnv
 from grl.agents import register_agent
 
-
-# ─────────────────── SOKOBAN AGENT ───────────────────
 @register_agent("sokobanAgent")
 class SokobanAgent(BaseAgent):
   """

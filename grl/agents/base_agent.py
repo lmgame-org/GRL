@@ -40,11 +40,8 @@ class BaseAgent:
     )
     self.action_separator = self.agent_config.get("action_separator", "||")
 
-    # Define turn prompt template based on enable_think
-    if self.enable_think:
-      self.turn_prompt_template = """Turn {turn_number}:\nState:\n{state}\nYou have {actions_remaining} actions remaining. Always output: <think> [Your thoughts] </think> <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
-    else:
-      self.turn_prompt_template = """Turn {turn_number}:\nState:\n{state}\nYou have {actions_remaining} actions remaining. Always output: <answer> [your answer] </answer> with no extra text. Strictly follow this format. Max response length: {max_tokens} tokens.\n"""
+    # Define turn prompt template based on enable_think (Qwen3 format)
+    self.turn_prompt_template = """Turn {turn_number}:\nState:\n{state}\nYou have {actions_remaining} actions remaining. Max response length: {max_tokens} tokens.\n"""
 
     self.trajectory_history = MultiTurnTrajectory(max_length=self.max_turns)
     self.raw_response_list = []  # Store all raw LLM responses for debugging
@@ -54,6 +51,10 @@ class BaseAgent:
     ]
     self.total_actions_consumed = 0
     self.penalty = 0.0  # Track accumulated penalty
+
+  def get_feedback_between_turns(self, reward: float) -> str:
+    """Get textual feedback for the agent."""
+    return f"Reward: \n{reward}\n"
 
   # ─────────────────── LLM INTERFACE ───────────────────
   def get_llm_prompts(self, env_out):
@@ -90,7 +91,7 @@ class BaseAgent:
           self.messages[1]["content"] + "\n" + turn_content
       )
     else:
-      reward_msg = f"Reward: \n{env_out.reward}\n"
+      reward_msg = self.get_feedback_between_turns(env_out.reward)
       turn_msg["content"] = reward_msg + " " + turn_msg["content"]
       self.messages.append(turn_msg)
 
@@ -118,66 +119,58 @@ class BaseAgent:
     """
     import re
 
-    if self.agent_config.get("use_think_answer_token", True):
-      if enable_think:
-        llm_response = "<think>" + llm_response
-      else:
-        llm_response = "<answer>" + llm_response
-    else:
-      llm_response = llm_response
+    if enable_think:
+      llm_response_with_prefix = "<think>" + llm_response
+      pattern = r"<think>(.*?)</think>\s*Answer:\s*([^\n]+)"
+      match = re.search(pattern, llm_response_with_prefix, re.DOTALL)
 
-    # Define pattern based on enable_think
-    pattern = (
-        r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
-        if enable_think
-        else r"<answer>(.*?)</answer>"
-    )
-    match = re.search(pattern, llm_response, re.DOTALL)
-
-    if not match:
-      # No valid pattern found, return original response with empty actions
-      processed_response, actions = llm_response, []
-    else:
-      if enable_think:
-        think_content, action_content = match.group(1), match.group(2)
-      else:
-        think_content, action_content = "", match.group(1)
-
-      # Clean up special tokens
+      if not match:
+        # No valid pattern found, return original response with empty actions
+        processed_response, actions = llm_response, [llm_response]
+        return processed_response, actions
+      
+      think_content, action_content = match.group(1).strip(), match.group(2).strip()
+        
+        # Clean up special tokens
       special_tokens = [
           "<think>",
           "</think>",
-          "<answer>",
-          "</answer>",
           "<|im_start|>",
           "<|im_end|>",
       ]
       for special_token in special_tokens:
         action_content = action_content.replace(special_token, "").strip()
         think_content = think_content.replace(special_token, "").strip()
+    else:
+      match = re.search(r"Answer:\s*(\S+)", llm_response)
+      if match:
+          action_content = match.group(1)
 
-      # Parse actions using || separator
-      actions = [
-          action.strip()
-          for action in action_content.split(self.action_separator)
-          if action.strip()
+      # Clean up special tokens
+      special_tokens = [
+          "<|im_start|>",
+          "<|im_end|>",
       ]
+      for special_token in special_tokens:
+        action_content = action_content.replace(special_token, "").strip()
 
-      # Limit actions to max_actions_per_turn
-      if len(actions) > self.max_actions_per_turn:
-        actions = actions[
-            : self.max_actions_per_turn
-        ]  # Only the first MAX_ACTIONS actions are kept
-        action_content = self.action_separator.join(actions)
+    # Parse actions using || separator
+    actions = [
+        action.strip()
+        for action in action_content.split(self.action_separator)
+        if action.strip()
+    ]
 
-      # Reconstruct properly formatted response
-      if enable_think:
-        processed_response = (
-            f"<think>{think_content}</think><answer>{action_content}</answer>"
-        )
-      else:
-        processed_response = f"<answer>{action_content}</answer>"
-
+    # Limit actions to max_actions_per_turn
+    if len(actions) > self.max_actions_per_turn:
+      actions = actions[: self.max_actions_per_turn]
+      action_content = self.action_separator.join(actions)
+      
+    processed_response = (
+      action_content if not enable_think 
+      else f"<think>{think_content}</think>{action_content}"
+    )
+    
     return processed_response, actions
 
   # ─────────────────── ROLLOUT STATE COLLECTION ───────────────────
@@ -310,3 +303,192 @@ class BaseAgent:
       print(sep)
     except Exception:
       pass
+
+
+if __name__ == "__main__":
+  import argparse
+  from omegaconf import OmegaConf
+  from grl.agents import get_agent_cls, list_registered_agents
+
+  def print_separator(title=""):
+    sep = "=" * 60
+    if title:
+      print(f"\n{sep}\n{title}\n{sep}")
+    else:
+      print(sep)
+
+  def print_messages(messages):
+    """Pretty print the messages list."""
+    for i, msg in enumerate(messages):
+      role = msg.get("role", "unknown")
+      content = msg.get("content", "")
+      print(f"\n[{i}] Role: {role}")
+      print("-" * 40)
+      print(content)
+      print("-" * 40)
+
+  def main():
+    parser = argparse.ArgumentParser(description="Debug Agent interactively with real environment")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="gsm8k_5_turn",
+        help="Config name from agents.yaml (default: gsm8k_1_turn)",
+    )
+    parser.add_argument(
+        "--config-file",
+        type=str,
+        default="configs/agents.yaml",
+        help="Path to config file (default: configs/agents.yaml)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for environment (default: 42)",
+    )
+    parser.add_argument(
+        "--agent-id",
+        type=int,
+        default=0,
+        help="Agent ID / data index (default: 0)",
+    )
+    args = parser.parse_args()
+
+    # Load config
+    print_separator("Loading Configuration")
+    all_configs = OmegaConf.load(args.config_file)
+    if args.config not in all_configs:
+      print(f"Error: Config '{args.config}' not found in {args.config_file}")
+      print(f"Available configs: {list(all_configs.keys())}")
+      return
+    config = all_configs[args.config]
+    print(f"Config name: {args.config}")
+    print(f"Config contents:\n{OmegaConf.to_yaml(config)}")
+
+    # Get agent class from registry
+    print_separator("Creating Agent")
+    agent_name = config.get("agent_name") or config.get("agent_type")
+    if not agent_name:
+      print(f"Error: Config must have 'agent_name' or 'agent_type'")
+      print(f"Available agents: {list_registered_agents()}")
+      return
+
+    print(f"Agent type: {agent_name}")
+    print(f"Available agents: {list_registered_agents()}")
+
+    try:
+      agent_cls = get_agent_cls(agent_name)
+    except KeyError as e:
+      print(f"Error: {e}")
+      return
+
+    # Create agent instance
+    agent = agent_cls(config, group_id=0, agent_id=args.agent_id, seed=args.seed, tag="debug")
+    print(f"Agent created with:")
+    print(f"  - max_turns: {agent.max_turns}")
+    print(f"  - max_actions_per_turn: {agent.max_actions_per_turn}")
+    print(f"  - max_actions_all_turns: {agent.max_actions_all_turns}")
+    print(f"  - enable_think: {agent.enable_think}")
+    print(f"  - max_tokens: {agent.max_tokens}")
+
+    # Reset environment to get initial state
+    print_separator("Resetting Environment")
+    env_out = agent.reset(seed=args.seed)
+    print(f"Initial state:\n{env_out.state}")
+
+    print_separator("Starting Interactive Debug Loop")
+    print("Commands:")
+    print("  - Type your LLM response and press Enter")
+    print("  - Type 'quit' or 'q' to exit")
+    print("  - Type 'reset' to reset the agent and environment")
+    print("  - Type 'history' to show trajectory history")
+    print("  - Type 'messages' to show current conversation messages")
+
+    while not env_out.terminated and not env_out.truncated:
+      print_separator(f"Turn {agent.cur_turn + 1}")
+
+      # Get LLM prompts
+      messages = agent.get_llm_prompts(env_out)
+
+      print("\n>>> LLM PROMPT (Messages to send to LLM):")
+      print_messages(messages)
+
+      # Get user input for LLM response
+      print("\n>>> Enter LLM response (or command):")
+      try:
+        user_input = input("> ").strip()
+      except EOFError:
+        print("\nEOF received, exiting...")
+        break
+
+      if not user_input:
+        print("Empty input, please try again.")
+        continue
+
+      # Handle commands
+      if user_input.lower() in ["quit", "q", "exit"]:
+        print("Exiting debug loop...")
+        break
+
+      if user_input.lower() == "reset":
+        print("Resetting agent and environment...")
+        agent = agent_cls(config, group_id=0, agent_id=args.agent_id, seed=args.seed, tag="debug")
+        env_out = agent.reset(seed=args.seed)
+        print(f"Initial state:\n{env_out.state}")
+        continue
+
+      if user_input.lower() == "history":
+        print("\n>>> Trajectory History:")
+        for i, traj in enumerate(agent.trajectory_history.get()):
+          state_preview = traj.state[:80] + "..." if len(traj.state) > 80 else traj.state
+          print(f"  [{i}] state: {state_preview}")
+          print(f"      actions: {traj.actions}")
+          print(f"      reward: {traj.reward}")
+          print(f"      info: {traj.info}")
+        continue
+
+      if user_input.lower() == "messages":
+        print("\n>>> Current Messages:")
+        print_messages(agent.messages)
+        continue
+
+      # Process LLM response through the actual environment
+      llm_response = user_input
+      env_out = agent.get_env_outputs(llm_response)
+
+      print("\n>>> Environment Output:")
+      print(f"  State: {env_out.state}")
+      print(f"  Reward: {env_out.reward}")
+      print(f"  Info: {env_out.info}")
+      print(f"  Terminated: {env_out.terminated}")
+      print(f"  Truncated: {env_out.truncated}")
+
+      print(f"\n>>> Agent State:")
+      print(f"  Current turn: {agent.cur_turn}/{agent.max_turns}")
+      print(f"  Total actions consumed: {agent.total_actions_consumed}/{agent.max_actions_all_turns}")
+      print(f"  Penalty: {agent.penalty}")
+
+      if env_out.terminated or env_out.truncated:
+        print("\n>>> Episode ended!")
+
+    print_separator("Debug Session Complete")
+    print(f"Final agent state:")
+    print(f"  - Turns completed: {agent.cur_turn}")
+    print(f"  - Total actions: {agent.total_actions_consumed}")
+    print(f"  - Penalty: {agent.penalty}")
+
+    print("\n>>> Final Trajectory History:")
+    for i, traj in enumerate(agent.trajectory_history.get()):
+      state_preview = traj.state[:80] + "..." if len(traj.state) > 80 else traj.state
+      print(f"  [{i}] state: {state_preview}")
+      print(f"      actions: {traj.actions}")
+      print(f"      reward: {traj.reward}")
+      print(f"      info: {traj.info}")
+
+    # Get final rollout states
+    print("\n>>> Final Rollout States:")
+    rollout_states = agent.get_final_rollout_states()
+    print(f"  Metrics: {rollout_states.get('metrics', {})}")
+
+  main()

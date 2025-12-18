@@ -49,7 +49,7 @@ def get_agent_cls(name: str) -> Type:
       extra = f" (agent is unavailable due to import error: {UNAVAILABLE_AGENTS[name]})"
     raise KeyError(
         f"Agent '{name}' not found in registry{extra}. Available agents: {list(REGISTERED_AGENTS.keys())}"
-    )
+      )
   return REGISTERED_AGENTS[name]
 
 
@@ -79,15 +79,12 @@ def _safe_import(import_fn, agent_key: str):
     warnings.warn(f"Skipping agent '{agent_key}' due to import error: {e}")
 
 
+# ─────────────────── NON-MATH AGENTS ───────────────────
 _safe_import(
     lambda: __import__(
         "grl.agents.sokobanAgent.agent", fromlist=["SokobanAgent"]
     ),
     "sokobanAgent",
-)
-_safe_import(
-    lambda: __import__("grl.agents.gsm8kAgent.agent", fromlist=["GSM8KAgent"]),
-    "gsm8kAgent",
 )
 _safe_import(
     lambda: __import__(
@@ -111,31 +108,9 @@ _safe_import(
     lambda: __import__("grl.agents.birdAgent.agent", fromlist=["BirdAgent"]),
     "birdAgent",
 )
+
+# ─────────────────── UNIFIED MATH AGENT ───────────────────
 _safe_import(
-    lambda: __import__(
-        "grl.agents.aime24Agent.agent", fromlist=["AIME24Agent"]
-    ),
-    "aime24Agent",
-)
-_safe_import(
-    lambda: __import__(
-        "grl.agents.aime25Agent.agent", fromlist=["AIME25Agent"]
-    ),
-    "aime25Agent",
-)
-_safe_import(
-    lambda: __import__("grl.agents.amc23Agent.agent", fromlist=["AMC23Agent"]),
-    "amc23Agent",
-)
-_safe_import(
-    lambda: __import__(
-        "grl.agents.math500Agent.agent", fromlist=["Math500Agent"]
-    ),
-    "math500Agent",
-)
-_safe_import(
-    lambda: __import__(
-        "grl.agents.minervamathAgent.agent", fromlist=["MinervamathAgent"]
-    ),
-    "minervamathAgent",
+    lambda: __import__("grl.agents.mathAgent.agent", fromlist=["MathAgent"]),
+    "mathAgent",
 )
